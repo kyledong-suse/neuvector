@@ -324,19 +324,6 @@ func DPCtrlConfigMAC(MACs []string, tap *bool, appMap map[share.CLUSProtoPort]*s
 	dpSendMsg(msg)
 }
 
-func DPCtrlConfigNBE(MACs []string, nbe *bool) {
-	data := DPConfigNbeReq {
-		Cfg: &DPNbeConfig{
-			MACs: MACs,
-		},
-	}
-	if nbe != nil {
-		data.Cfg.Nbe = nbe
-	}
-	msg, _ := json.Marshal(data)
-	dpSendMsg(msg)
-}
-
 func DPCtrlAddPortPair(vex_iface, vin_iface string, epmac net.HardwareAddr, quar *bool) {
 	data := DPAddPortPairReq{
 		AddPortPair: &DPPortPair{
@@ -982,6 +969,32 @@ func DPCtrlDlpCfgChgMac(delmacs utils.Set) {
 	if dpSendMsg(msg) == -1 {
 		log.Debug("dpSendMsg send error")
 	}
+}
+
+func DPCtrlAttachEbpfTlsSniff(netns string, epmac net.HardwareAddr, opensslLibPath string) {
+	log.WithFields(log.Fields{"netns": netns}).Debug("")
+
+	data := DPAttachEbpfTlsSniffReq{
+		AttachEbpfTlsSniff: &DPAttachEbpfTlsSniff{
+			NetNS:          netns,
+			EPMAC:          epmac.String(),
+			OpensslLibPath: opensslLibPath,
+		},
+	}
+	msg, _ := json.Marshal(data)
+	dpSendMsg(msg)
+}
+
+func DPCtrlDestoryEbpfTlsSniff(netns string) {
+	log.WithFields(log.Fields{"netns": netns}).Debug("")
+
+	data := DPDestoryEbpfTlsSniffReq{
+		DestoryEbpfTlsSniff: &DPDestoryEbpfTlsSniff{
+			NetNS: netns,
+		},
+	}
+	msg, _ := json.Marshal(data)
+	dpSendMsg(msg)
 }
 
 // --- keep alive

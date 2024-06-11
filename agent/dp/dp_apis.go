@@ -123,15 +123,6 @@ type DPConfigMACReq struct {
 	Cfg *DPMacConfig `json:"ctrl_cfg_mac"`
 }
 
-type DPNbeConfig struct {
-	MACs []string          `json:"macs"`
-	Nbe  *bool             `json:"nbe,omitempty"`
-}
-
-type DPConfigNbeReq struct {
-	Cfg *DPNbeConfig `json:"ctrl_cfg_nbe"`
-}
-
 type DPRefreshApp struct {
 }
 
@@ -391,4 +382,22 @@ type DPDlpCfgMac struct {
 
 type DPDlpCfgMACReq struct {
 	DPDlpChgCfgMac *DPDlpCfgMac `json:"ctrl_cfg_dlpmac"`
+}
+
+type DPAttachEbpfTlsSniff struct {
+	NetNS          string `json:"netns"`
+	EPMAC          string `json:"epmac"`
+	OpensslLibPath string `json:"openssl_lib_path"`
+}
+
+type DPAttachEbpfTlsSniffReq struct {
+	AttachEbpfTlsSniff *DPAttachEbpfTlsSniff `json:"ctrl_attach_ebpf_tls_sniff"`
+}
+
+type DPDestoryEbpfTlsSniff struct {
+	NetNS string `json:"netns"`
+}
+
+type DPDestoryEbpfTlsSniffReq struct {
+	DestoryEbpfTlsSniff *DPDestoryEbpfTlsSniff `json:"ctrl_destory_ebpf_tls_sniff"`
 }

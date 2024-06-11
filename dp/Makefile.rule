@@ -67,8 +67,14 @@ $(OBJDIR)/$(TARGET_OBJ): $(addprefix $(OBJDIR)/, $(OBJS)) $(SUBDIR_OBJS)
 	$(LD) -r -o $@ $^
 endif
 
+EBPF := dpi/ebpf
+EBPF_OUTPUT := dpi/ebpf/.output
+ARCH ?= $(shell uname -m | sed 's/x86_64/x86/' | sed 's/aarch64/arm64/')
+VMLINUX := third-party/vmlinux/$(ARCH)/vmlinux.h
+INCLUDES := -I$(EBPF) -I$(EBPF_OUTPUT) -Ithird-party/libbpf/include/uapi -I$(dir $(VMLINUX))
+
 $(OBJDIR)/%.o:%.c
-	$(CC) $(CFLAGS) $(EXTRA_CFLAGS) -include $(ROOTDIR)/base.h -include $(ROOTDIR)/defs.h -c $< -o $@ -MD -MF $(@:.o=.d)
+	$(CC) $(CFLAGS) $(EXTRA_CFLAGS) -include $(ROOTDIR)/base.h -include $(ROOTDIR)/defs.h $(INCLUDES) -c $< -o $@ -MD -MF $(@:.o=.d)
 	@cp $(OBJDIR)/$*.d $(DEPDIR)/$*.d
 	@sed -e 's/#.*//' -e 's/^[^:]*: *//' -e 's/ *\\$$//' \
 		-e '/^$$/ d' -e 's/$$/ :/' < $(OBJDIR)/$*.d >> $(DEPDIR)/$*.d;

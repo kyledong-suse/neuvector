@@ -15,7 +15,8 @@ STATIC_LIBS += third-party/.objs/lib/libjemalloc.a
 STATIC_LIBS += third-party/.objs/lib/timeout.a
 STATIC_LIBS += third-party/.objs/lib/libpcre2-8.a
 STATIC_LIBS += third-party/.objs/lib/x86_64-linux-gnu/libhs.a
+STATIC_LIBS += dpi/ebpf/.output/libbpf/libbpf.a
 
-EXTRA_LDFLAGS = -pthread -lurcu -lurcu-cds -lrt -lstdc++ -lm -lnetfilter_queue -Wl,-rpath,'$$ORIGIN' -Wl,--disable-new-dtags
+EXTRA_LDFLAGS = -pthread -lurcu -lurcu-cds -lrt -lstdc++ -lelf -lz -lm -lnetfilter_queue -Wl,-rpath,'$$ORIGIN' -Wl,--disable-new-dtags
 
 include $(TOPDIR)/Makefile.rule

@@ -1,6 +1,6 @@
 TOPDIR = ..
 
-SUBDIRS = parsers sig
+SUBDIRS = parsers sig ebpf
 
 TARGET_OBJ = dpi.o
 

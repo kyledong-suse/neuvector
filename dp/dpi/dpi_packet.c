@@ -26,8 +26,8 @@ extern void dpi_icmp_tracker(dpi_packet_t *p);
 extern void dpi_ip_tracker(dpi_packet_t *p);
 extern bool dpi_process_detector(dpi_packet_t *p);
 extern bool cmp_mac_prefix(void *m1, void *prefix);
-extern bool dpi_dlp_ep_policy_check(dpi_packet_t *p);
-extern bool dpi_waf_ep_policy_check(dpi_packet_t *p);
+extern bool dpi_dlp_ep_policy_check(dpi_packet_t *p, bool ebpf_tls);
+extern bool dpi_waf_ep_policy_check(dpi_packet_t *p, bool ebpf_tls);
 
 static uint16_t get_l4_cksum(uint32_t sum, void *l4_hdr, uint16_t l4_len)
 {
@@ -1139,33 +1139,40 @@ int dpi_inspect_ethernet(dpi_packet_t *p)
         }
     }
 
-    dpi_pkt_proto_tracker(p);
+    if (!p->ebpf_tls) {
+        dpi_pkt_proto_tracker(p);
 
-    if (p->session != NULL) {
-        dpi_session_t *sess = p->session;
+        if (p->session != NULL) {
+            dpi_session_t *sess = p->session;
 
-        if (unlikely(p->severity > sess->severity)) {
-            // Populate severity of threat detected.
-            sess->severity = p->severity;
-            sess->threat_id = p->threat_id;
-            FLAGS_SET(p->flags, DPI_PKT_FLAG_LOG_MID);
+            if (unlikely(p->severity > sess->severity)) {
+                // Populate severity of threat detected.
+                sess->severity = p->severity;
+                sess->threat_id = p->threat_id;
+                FLAGS_SET(p->flags, DPI_PKT_FLAG_LOG_MID);
+            }
+            // Copy session action to the packet if packet action is allow.
+            dpi_set_action(p, sess->action);
+
+            if (p->action == DPI_ACTION_BYPASS) {
+                dpi_pkt_policy_reeval(p);
+            } else if (p->ep->tap || p->action <= DPI_ACTION_ALLOW) {
+                dpi_pkt_proto_parser(p);
+                dpi_pkt_policy_reeval(p);
+            }
         }
-        // Copy session action to the packet if packet action is allow.
-        dpi_set_action(p, sess->action);
-
-        if (p->action == DPI_ACTION_BYPASS) {
-            dpi_pkt_policy_reeval(p);
-        } else if (p->ep->tap || p->action <= DPI_ACTION_ALLOW) {
-            dpi_pkt_proto_parser(p);
-            dpi_pkt_policy_reeval(p);
+    } else {
+        if (p->session != NULL) {
+            dpi_session_t *sess = p->session;
+            sess->ebpf_tls_pid = p->ebpf_tls_pid;
         }
     }
 
-    bool dlp_detect = dpi_dlp_ep_policy_check(p);
+    bool dlp_detect = dpi_dlp_ep_policy_check(p, p->ebpf_tls);
     if (dlp_detect) {
         p->flags |= DPI_PKT_FLAG_DETECT_DLP;
     }
-    bool waf_detect = dpi_waf_ep_policy_check(p);
+    bool waf_detect = dpi_waf_ep_policy_check(p, p->ebpf_tls);
     if (waf_detect) {
         p->flags |= DPI_PKT_FLAG_DETECT_WAF;
     }

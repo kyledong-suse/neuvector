@@ -740,7 +740,7 @@ static void dpi_sift_matchs (dpi_packet_t *p)
 }
 
 //per packet decision whether to detect or not
-bool dpi_waf_ep_policy_check (dpi_packet_t *p) {
+bool dpi_waf_ep_policy_check (dpi_packet_t *p, bool ebpf_tls) {
     if (!p || !p->ep || !(p->ep->dlp_detector)) {
             return false;
     }
@@ -759,7 +759,7 @@ bool dpi_waf_ep_policy_check (dpi_packet_t *p) {
     uint32_t app = 0;
 
     app = sess->app?sess->app:(sess->base_app?sess->base_app:DP_POLICY_APP_UNKNOWN);
-    if (app == DPI_APP_SSL || app == DPI_APP_SSH) {
+    if ((app == DPI_APP_SSL && !ebpf_tls) || app == DPI_APP_SSH) {
         //DEBUG_DLP("No waf inspection for SSL/SSH protocol, app(%u)!\n", app);
         return false;
     }
@@ -807,7 +807,7 @@ bool dpi_waf_ep_policy_check (dpi_packet_t *p) {
 }
 
 //per packet decision whether to detect or not
-bool dpi_dlp_ep_policy_check (dpi_packet_t *p) {
+bool dpi_dlp_ep_policy_check (dpi_packet_t *p, bool ebpf_tls) {
     if (!p || !p->ep || !(p->ep->dlp_detector)) {
             return false;
     }
@@ -826,7 +826,7 @@ bool dpi_dlp_ep_policy_check (dpi_packet_t *p) {
     uint32_t app = 0;
 
     app = sess->app?sess->app:(sess->base_app?sess->base_app:DP_POLICY_APP_UNKNOWN);
-    if (app == DPI_APP_SSL || app == DPI_APP_SSH) {
+    if ((app == DPI_APP_SSL && !ebpf_tls) || app == DPI_APP_SSH) {
         //DEBUG_DLP("No dlp inspection for SSL/SSH protocol, app(%u)!\n", app);
         return false;
     }

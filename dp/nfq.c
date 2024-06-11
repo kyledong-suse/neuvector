@@ -37,6 +37,7 @@ static int dp_nfq_rx_cb(struct nfq_q_handle *qh, struct nfgenmsg *nfmsg,
     dp_context_t *ctx = (dp_context_t *)data;
     struct ethhdr *nfq_eth;
 
+    memset(&context, 0, sizeof(io_ctx_t));
     context.dp_ctx = ctx;
     context.tick = ctx->nfq_ctx.last_tick;
     context.stats_slot = g_stats_slot;

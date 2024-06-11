@@ -30,6 +30,8 @@ extern int dp_read_ring_stats(dp_stats_t *s, int thr_id);
 extern int dp_read_conn_stats(conn_stats_t *s, int thr_id);
 extern int dp_data_add_port_pair(const char *vin_iface, const char *vex_iface,const char *ep_mac, bool quar, int thr_id);
 extern int dp_data_del_port_pair(const char *vin_iface, const char *vex_iface, int thr_id);
+extern int dp_attach_ebpf_tls_sniff(const char *netns, const char *ep_mac, const char *openssl_lib_path, int thr_id);
+extern int dp_destory_ebpf_tls_sniff(const char *netns, int thr_id);
 
 extern rcu_map_t g_ep_map;
 extern struct cds_list_head g_subnet4_list;
@@ -612,46 +614,6 @@ static int dp_ctrl_del_mac(json_t *msg)
         dp_dpi_del_mac(&mac_addr);
     }
 
-    return 0;
-}
-
-static int dp_ctrl_cfg_nbe(json_t *msg)
-{
-    json_t *obj, *nbe_obj;
-    bool nbe = false;
-    int len, i;
-
-    obj = json_object_get(msg, "macs");
-    nbe_obj = json_object_get(msg, "nbe");
-    if (nbe_obj != NULL) {
-        nbe = json_boolean_value(nbe_obj);
-    }
-
-    len = json_array_size(obj);
-    if (len == 0) {
-        DEBUG_ERROR(DBG_CTRL, "Missing mac address in mac cfg!!\n");
-        return -1;
-    }
-
-    rcu_read_lock();
-    for (i = 0; i < len; i ++) {
-        struct ether_addr mac_addr;
-        const char *mac_str = json_string_value(json_array_get(obj, i));
-        ether_aton_r(mac_str, &mac_addr);
-
-        io_mac_t *mac = rcu_map_lookup(&g_ep_map, &mac_addr);
-        if (mac == NULL) {
-            DEBUG_ERROR(DBG_CTRL, "mac %s not found in ep map.\n", mac_str);
-            continue;
-        }
-
-        io_ep_t *ep = mac->ep;
-        if (nbe_obj != NULL) {
-            ep->nbe = nbe;
-        }
-        DEBUG_CTRL("mac=%s, ep->nbe=%d\n", mac_str, nbe);
-    }
-    rcu_read_unlock();
     return 0;
 }
 
@@ -2346,6 +2308,30 @@ static int dp_ctrl_enable_icmp_policy(json_t *msg)
     return 0;
 }
 
+static int dp_ctrl_attach_ebpf_tls_sniff(json_t *msg)
+{
+    const char *netns, *ep_mac, *openssl_lib_path;
+
+    netns = json_string_value(json_object_get(msg, "netns"));
+    ep_mac = json_string_value(json_object_get(msg, "epmac"));
+    openssl_lib_path = json_string_value(json_object_get(msg, "openssl_lib_path"));
+
+    DEBUG_CTRL("attach eBPF TLS sniff netns=%s, openssl_lib_path=%s\n", netns, openssl_lib_path);
+
+    return dp_attach_ebpf_tls_sniff(netns, ep_mac, openssl_lib_path, 0);
+}
+
+static int dp_ctrl_destory_ebpf_tls_sniff(json_t *msg)
+{
+    const char *netns;
+
+    netns = json_string_value(json_object_get(msg, "netns"));
+
+    DEBUG_CTRL("destory eBPF TLS sniff netns=%s\n", netns);
+
+    return dp_destory_ebpf_tls_sniff(netns, 0);
+}
+
 #define BUF_SIZE 8192
 char ctrl_msg_buf[BUF_SIZE];
 static int dp_ctrl_handler(int fd)
@@ -2401,8 +2387,6 @@ static int dp_ctrl_handler(int fd)
             ret = dp_ctrl_del_mac(msg);
         } else if (strcmp(key, "ctrl_cfg_mac") == 0) {
             ret = dp_ctrl_cfg_mac(msg);
-        } else if (strcmp(key, "ctrl_cfg_nbe") == 0) {
-            ret = dp_ctrl_cfg_nbe(msg);
         } else if (strcmp(key, "ctrl_refresh_app") == 0) {
             ret = dp_ctrl_refresh_app(msg);
         } else if (strcmp(key, "ctrl_stats_macs") == 0) {
@@ -2451,6 +2435,10 @@ static int dp_ctrl_handler(int fd)
             ret = dp_ctrl_detect_unmanaged_wl(msg);
         } else if (strcmp(key, "ctrl_enable_icmp_policy") == 0) {
             ret = dp_ctrl_enable_icmp_policy(msg);
+        } else if (strcmp(key, "ctrl_attach_ebpf_tls_sniff") == 0) {
+            ret = dp_ctrl_attach_ebpf_tls_sniff(msg);
+        } else if (strcmp(key, "ctrl_destory_ebpf_tls_sniff") == 0) {
+            ret = dp_ctrl_destory_ebpf_tls_sniff(msg);
         }
         DEBUG_CTRL("\"%s\" done\n", key);
     }
@@ -2715,9 +2703,6 @@ int dp_ctrl_connect_report(DPMsgSession *log, int count_session, int count_viola
             if (FLAGS_TEST(log->Flags, DPSESS_FLAG_UWLIP)) {
                 FLAGS_SET(conn->Flags, DPCONN_FLAG_UWLIP);
             }
-            if (FLAGS_TEST(log->Flags, DPSESS_FLAG_CHK_NBE)) {
-                FLAGS_SET(conn->Flags, DPCONN_FLAG_CHK_NBE);
-            }
             conn->FirstSeenAt = conn->LastSeenAt = get_current_time() - log->Idle;
             conn->Bytes = log->ClientBytes + log->ServerBytes;
             conn->Sessions = count_session;
@@ -2766,7 +2751,6 @@ static void netify_connects(DPMsgConnect *conn)
     conn->ServerPort = htons(conn->ServerPort);
     conn->ClientPort = htons(conn->ClientPort);
     conn->EtherType = htons(conn->EtherType);
-    conn->Flags = htons(conn->Flags);
     conn->Bytes = htonl(conn->Bytes);
     conn->Sessions = htonl(conn->Sessions);
     conn->Violates = htonl(conn->Violates);

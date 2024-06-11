@@ -157,6 +157,9 @@ typedef struct dpi_packet_ {
     int dlp_candidates;
     dpi_match_t dlp_match_results[DPI_MAX_MATCH_RESULT];
     dpi_match_candidate_t dlp_match_candidates[DPI_MAX_MATCH_CANDIDATE];
+
+    bool ebpf_tls;
+    uint32_t ebpf_tls_pid;
 } dpi_packet_t;
 
 static inline uint8_t *dpi_pkt_ptr(dpi_packet_t *p)

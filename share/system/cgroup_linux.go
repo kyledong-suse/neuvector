@@ -843,6 +843,70 @@ func (s *SystemTools) MonitorMemoryPressureEvents(threshold uint64, callback Mem
 	(2) multiple-mounts:
 	    "overlay /run/containerd/io.containerd.runtime.v2.task/k8s.io/5e14.../rootfs "
 */
+func readLowerLayerPath(file io.ReadSeeker) ([]string, error) {
+	lowerdir := make([]string, 0)
+	var found bool
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := scanner.Text()
+		fstab := strings.Fields(line)
+		for i, field := range fstab {
+			if i == 0 && !strings.Contains(strings.ToLower(field), "overlay") { // fs_spec: overlay family only
+				break // skip
+			}
+
+			if i == 3 { // fs_mntops
+				options := strings.Split(field, ",")
+				for _, op := range options {
+					if strings.HasPrefix(op, "lowerdir=") {
+						lowerdirValue := strings.TrimPrefix(op, "lowerdir=")
+						lowerdirSlices := strings.Split(lowerdirValue, ":")
+						// for docker overlay filesystems, it uses symbolic links that point to directories 
+						// where the actual layer data is stored
+						if strings.Contains(strings.ToLower(lowerdirValue), "docker") {
+							for _, path := range lowerdirSlices {
+								realPath, err := filepath.EvalSymlinks(path)
+								if err != nil {
+									realPath = path // Use the original path if it fails to resolve
+									// log.WithFields(log.Fields{"path": path, "err": err}).Debug(Fail to resolve symlink)
+								}
+								lowerdir = append(lowerdir, realPath)
+							}
+						} else {
+							lowerdir = append(lowerdir, lowerdirSlices...)
+						}
+						found = true
+						break
+					}
+				} // the last entry of the overlay could be a good target, too
+				break // discard following fields
+			}
+		}
+
+		if found { // skip scanning other entries
+			break
+		}
+	}
+
+	return lowerdir, nil
+}
+
+/*
+	fstab(5):
+
+	The first field (fs_spec): the device to be mounted
+	The second field (fs_file): the mount point (target) for the filesystem.
+	The third field (fs_vfstype): the type of the filesystem.
+	The fourth field (fs_mntops): the mount options associated with the filesystem.
+	The fifth field (fs_freq)
+	The sixth field (fs_passno)
+
+	Examples:
+	(1) single-mount:
+		"overlay / overlay rw,......""
+	(2) multiple-mounts:
+	    "overlay /run/containerd/io.containerd.runtime.v2.task/k8s.io/5e14.../rootfs "
+*/
 func readUppperLayerPath(file io.ReadSeeker, id string) (string, string, error) {
 	var rootfs, upperdir string
 	var found bool
@@ -960,6 +1024,22 @@ func readAufsSI(file io.ReadSeeker, id string) (string, error) {
 	}
 
 	return "", fmt.Errorf("not found")
+}
+
+func (s *SystemTools) ReadMountedLowerLayerPath(rootPid int) ([]string, error) {
+	path := make([]string, 0)
+	file, err := os.Open(fmt.Sprintf("/host/proc/%d/mounts", rootPid))
+	if err != nil {
+		return path, err
+	}
+	defer file.Close()
+
+	path, err = readLowerLayerPath(file)
+	if err != nil {
+		log.WithFields(log.Fields{"error": err, "pid": rootPid}).Error()
+		return path, err
+	}
+	return path,  err
 }
 
 func (s *SystemTools) ReadMountedUppperLayerPath(rootPid int, id string) (string, string, error) {

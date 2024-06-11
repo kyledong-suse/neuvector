@@ -72,6 +72,25 @@ typedef struct dp_nfq_ {
     void (*stats)(struct dp_context_ *ctx);
 } dp_nfq_t;
 
+typedef enum dp_ebpf_type_{
+    DP_EBPF_TCP_SOCKET = 0,
+    DP_EBPF_TLS_SNIFF,
+} dp_ebpf_type_t;
+
+typedef struct dp_ebpf_ {
+    dp_ebpf_type_t type;
+    struct tcp_socket_bpf *ebpf_tcp_socket_obj;
+    struct perf_buffer *ebpf_tcp_socket_pb;
+    struct tls_sniff_bpf *ebpf_tls_sniff_obj;
+    struct perf_buffer *ebpf_tls_sniff_pb;
+
+    uint32_t last_tick;
+    uint8_t rx_accept;
+    uint8_t rx_deny;
+    int (*rx)(struct dp_context_ *ctx, uint32_t tick);
+    void (*stats)(struct dp_context_ *ctx);
+} dp_ebpf_t;
+
 typedef struct dp_context_ {
     struct cds_hlist_node link;
     timer_node_t free_node;
@@ -80,6 +99,8 @@ typedef struct dp_context_ {
     int fd;
 #define CTX_NAME_LEN 64 // must be > IFACE_NAME_LEN=16 and "/proc/%d/ns/net"
 #define CTX_NFQ_PREFIX "nfq"
+#define CTX_EBPF_TCP_SOCKET_PREFIX "ebpf-tcp-socket"
+#define CTX_EBPF_OPENSSL_PREFIX "ebpf-openssl"
     char name[CTX_NAME_LEN];
     dp_ring_t ring;
     dp_nfq_t nfq_ctx;
@@ -96,6 +117,8 @@ typedef struct dp_context_ {
     bool nfq;
     bool epoll;
     struct dp_context_ *peer_ctx; // for vbr peer is self, for no-tc vin/vex pair with each other.
+    bool ebpf;
+    dp_ebpf_t ebpf_ctx;
 } dp_context_t;
 
 typedef struct dp_bld_dlp_context_ {
@@ -107,6 +130,7 @@ typedef struct dp_thread_data_ {
     int epoll_fd;
     struct cds_hlist_head ctx_list;
     struct cds_hlist_head notc_nfq_ctx_list;
+    struct cds_hlist_head ebpf_ctx_list;
     timer_queue_t ctx_free_list;
     struct dp_context_ *ctx_inline;
     pthread_mutex_t ctrl_dp_lock;
