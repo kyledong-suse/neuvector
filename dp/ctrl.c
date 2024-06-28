@@ -2664,12 +2664,8 @@ int dp_ctrl_connect_report(DPMsgSession *log, int count_session, int count_viola
                 conn->ClientPort = log->ClientPort;
             }
             conn->EpSessCurIn = log->EpSessCurIn;
-            conn->EpSessIn1 = log->EpSessIn1;
-            conn->EpByteIn1 = log->EpByteIn1;
             conn->EpSessIn12 = log->EpSessIn12;
             conn->EpByteIn12 = log->EpByteIn12;
-            conn->EpSessIn60 = log->EpSessIn60;
-            conn->EpByteIn60 = log->EpByteIn60;
         } else if (dp_rate_limiter_check(rl) == 0 && (n = calloc(sizeof(*n), 1)) != NULL) {
             DPMsgConnect *conn = &n->conn;
             mac_cpy(conn->EPMAC, log->EPMAC);
@@ -2717,12 +2713,8 @@ int dp_ctrl_connect_report(DPMsgSession *log, int count_session, int count_viola
             conn->Severity = log->Severity;
             conn->PolicyId = log->PolicyId;
             conn->EpSessCurIn = log->EpSessCurIn;
-            conn->EpSessIn1 = log->EpSessIn1;
-            conn->EpByteIn1 = log->EpByteIn1;
             conn->EpSessIn12 = log->EpSessIn12;
             conn->EpByteIn12 = log->EpByteIn12;
-            conn->EpSessIn60 = log->EpSessIn60;
-            conn->EpByteIn60 = log->EpByteIn60;
             rcu_map_add(conn4_map, n, &key);
             (*cnt)++;
         }
@@ -2738,9 +2730,6 @@ int dp_ctrl_connect_report(DPMsgSession *log, int count_session, int count_viola
 
 static void send_connects(int count)
 {
-    if (g_disable_net_policy) {
-        return;
-    }
     //DEBUG_CTRL("count=%d\n", count);
 
     DPMsgHdr *hdr = (DPMsgHdr *)g_notify_msg;
@@ -2768,12 +2757,8 @@ static void netify_connects(DPMsgConnect *conn)
     conn->PolicyId = htonl(conn->PolicyId);
     conn->ThreatID = htonl(conn->ThreatID);
     conn->EpSessCurIn = htonl(conn->EpSessCurIn);
-    conn->EpSessIn1 = htonl(conn->EpSessIn1);
-    conn->EpByteIn1 = htonll(conn->EpByteIn1);
     conn->EpSessIn12 = htonl(conn->EpSessIn12);
     conn->EpByteIn12 = htonll(conn->EpByteIn12);
-    conn->EpSessIn60 = htonl(conn->EpSessIn60);
-    conn->EpByteIn60 = htonll(conn->EpByteIn60);
 }
 
 static void dp_ctrl_update_connects(void)

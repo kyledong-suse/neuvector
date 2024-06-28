@@ -358,13 +358,7 @@ func isFedOpAllowed(expectedFedRole string, roleRequired RoleRquired, w http.Res
 		}
 	}
 
-	var fedRole string
-	var err error
-	if acc.HasPermFed() {
-		fedRole, err = cacher.GetFedMembershipRole(access.NewReaderAccessControl())
-	} else {
-		fedRole, err = cacher.GetFedMembershipRole(acc)
-	}
+	fedRole, err := cacher.GetFedMembershipRole(acc)
 	if err != nil {
 		restRespNotFoundLogAccessDenied(w, login, err)
 		return nil, nil
@@ -391,7 +385,7 @@ func isFedRulesCleanupOngoing(w http.ResponseWriter) bool {
 	return false
 }
 
-// Be careful. This function is only for between-clusters joining/leaving APIs
+// Be careful. This function is only for between-clusters joining/leaving/polling/csp_support APIs
 func isNoAuthFedOpAllowed(expectedFedRole string, w http.ResponseWriter, r *http.Request, acc *access.AccessControl) bool {
 	fedRole, err := cacher.GetFedMembershipRole(acc)
 	if err != nil || (expectedFedRole != FedRoleAny && fedRole != expectedFedRole) {
@@ -1999,6 +1993,7 @@ func handlerJoinFed(w http.ResponseWriter, r *http.Request, ps httprouter.Params
 func leaveFed(w http.ResponseWriter, acc *access.AccessControl, login *loginSession, req api.RESTFedLeaveReq,
 	masterCluster api.RESTFedMasterClusterInfo, jointCluster api.RESTFedJointClusterInfo) (share.CLUSFedMembership, int, int, error) {
 
+	var statueCode int = http.StatusOK
 	var membership share.CLUSFedMembership
 
 	if masterCluster.ID == "" || jointCluster.ID == "" {
@@ -2040,6 +2035,9 @@ func leaveFed(w http.ResponseWriter, acc *access.AccessControl, login *loginSess
 			}
 		} else {
 			err99 = err
+			if err != nil {
+				statueCode = http.StatusInternalServerError
+			}
 		}
 	} else {
 		err99 = err
@@ -2048,7 +2046,7 @@ func leaveFed(w http.ResponseWriter, acc *access.AccessControl, login *loginSess
 	// after leaving federation, standalone NV reports its usage to CSP
 	cache.ConfigCspUsages(false, false, api.FedRoleNone, "")
 
-	return membership, http.StatusOK, 0, err99
+	return membership, statueCode, 0, err99
 }
 
 func handlerLeaveFed(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
