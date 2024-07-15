@@ -111,13 +111,13 @@ static int dp_rx_v1(dp_context_t *ctx, uint32_t tick)
     uint32_t count = 0;
     dp_ring_t *ring = &ctx->ring;
 
+    memset(&context, 0, sizeof(io_ctx_t));
     context.dp_ctx = ctx;
     context.tick = tick;
     context.stats_slot = g_stats_slot;
     context.tap = ctx->tap;
     context.tc = ctx->tc;
     context.quar = ctx->quar;
-    context.nfq = false;
     mac_cpy(context.ep_mac.ether_addr_octet, ctx->ep_mac.ether_addr_octet);
 
     while (count < ring->batch) {
@@ -258,6 +258,7 @@ static int dp_rx_v3(dp_context_t *ctx, uint32_t tick)
     uint32_t count = 0;
     dp_ring_t *ring = &ctx->ring;
 
+    memset(&context, 0, sizeof(io_ctx_t));
     context.dp_ctx = ctx;
     context.tick = tick;
     context.stats_slot = g_stats_slot;
@@ -406,7 +407,9 @@ int dp_open_socket(dp_context_t *ctx, const char *iface, bool tap, bool jumbofra
 
 int dp_rx(dp_context_t *ctx, uint32_t tick)
 {
-    if (ctx->nfq) {
+    if (ctx->ebpf) {
+        return ctx->ebpf_ctx.rx(ctx, tick);
+    } else if (ctx->nfq) {
         return ctx->nfq_ctx.rx(ctx, tick);
     } else {
         return ctx->ring.rx(ctx, tick);
@@ -444,7 +447,9 @@ int dp_send_packet(io_ctx_t *context, uint8_t *pkt, int len)
 
 void dp_get_stats(dp_context_t *ctx)
 {
-    if (ctx->nfq) {
+    if (ctx->ebpf) {
+        ctx->ebpf_ctx.stats(ctx);
+    } else if (ctx->nfq) {
         ctx->nfq_ctx.stats(ctx);
     } else {
         ctx->ring.stats(ctx->fd, &ctx->stats);

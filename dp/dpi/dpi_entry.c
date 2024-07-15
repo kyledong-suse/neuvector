@@ -416,9 +416,12 @@ static bool proxymesh_packet_direction(dpi_packet_t *p)
 //return value is only used by nfq, 0 means accept, 1 drop
 int dpi_recv_packet(io_ctx_t *ctx, uint8_t *ptr, int len)
 {
-    int action,c;
+    int action, c;
     bool tap = false, inspect = true, isproxymesh = false;
     bool nfq = ctx->nfq;
+    bool ebpf_tls = ctx->ebpf_tls;
+    bool ebpf_tls_ingress = ctx->ebpf_tls_ingress;
+    struct ethhdr *eth;
 
     th_snap.tick = ctx->tick;
 
@@ -437,6 +440,7 @@ int dpi_recv_packet(io_ctx_t *ctx, uint8_t *ptr, int len)
     th_packet.pkt = ptr;
     th_packet.cap_len = len;
     th_packet.l2 = 0;
+    th_packet.ebpf_tls = false;
 
     rcu_read_lock();
 
@@ -448,11 +452,15 @@ int dpi_recv_packet(io_ctx_t *ctx, uint8_t *ptr, int len)
     th_detect_unmanaged_wl = g_detect_unmanaged_wl;
 
     if (likely(th_packet.cap_len >= sizeof(struct ethhdr))) {
-        struct ethhdr *eth = (struct ethhdr *)(th_packet.pkt + th_packet.l2);
+        eth = (struct ethhdr *)(th_packet.pkt + th_packet.l2);
         io_mac_t *mac = NULL;
 
         // Lookup workloads
-        if (!ctx->tc) {
+        if (ebpf_tls) {
+            mac = rcu_map_lookup(&g_ep_map, &ctx->ep_mac.ether_addr_octet);
+            th_packet.ebpf_tls = true;
+            th_packet.ebpf_tls_pid = ctx->ebpf_tls_pid;
+        } else if (!ctx->tc) {
             // NON-TC mode just fwd the mcast/bcast mac packet
             if (is_mac_m_b_cast(eth->h_dest)) {
                 rcu_read_unlock();
@@ -506,7 +514,9 @@ int dpi_recv_packet(io_ctx_t *ctx, uint8_t *ptr, int len)
             mac = rcu_map_lookup(&g_ep_map, &ctx->ep_mac.ether_addr_octet);
         }
         if (likely(mac != NULL)) {
-            tap = mac->ep->tap;
+            if (!ebpf_tls) {
+                tap = mac->ep->tap;
+            }
 
             th_packet.ctx = ctx;
             th_packet.ep = mac->ep;
@@ -524,7 +534,7 @@ int dpi_recv_packet(io_ctx_t *ctx, uint8_t *ptr, int len)
                 }
             }
 
-            if (!isproxymesh && !nfq) {
+            if (!isproxymesh && !nfq && !ebpf_tls) {
                 if (th_packet.flags & DPI_PKT_FLAG_INGRESS) {
                     th_packet.ep_all_metry = &th_packet.ep_stats->in;
                     th_packet.all_metry = &th_packet.stats->in;
@@ -563,15 +573,37 @@ int dpi_recv_packet(io_ctx_t *ctx, uint8_t *ptr, int len)
 
     // Parse after figuring out direction so that if there is any threat in the packet
     // it can be logged correctly
-    action = dpi_parse_ethernet(&th_packet);
-    if (unlikely(action == DPI_ACTION_DROP || action == DPI_ACTION_RESET)) {
-        rcu_read_unlock();
-        if (th_packet.frag_trac != NULL) {
-            dpi_frag_discard(th_packet.frag_trac);
+    if (ebpf_tls) {
+        // L2
+        th_packet.id = ++th_counter.pkt_id;
+        th_packet.l3 = sizeof(*eth);
+        th_packet.len = th_packet.cap_len;
+        eth = (struct ethhdr *)(th_packet.pkt + th_packet.l2);
+        th_packet.eth_type = ntohs(eth->h_proto);
+        // L3
+        struct iphdr *iph = (struct iphdr *)(th_packet.pkt + th_packet.l3);
+        th_packet.l4 = th_packet.l3 + (iph->ihl << 2);
+        th_packet.ip_proto = iph->protocol;
+        // L4
+        struct tcphdr *tcph = (struct tcphdr *)(th_packet.pkt + th_packet.l4);
+        th_packet.sport = ntohs(tcph->th_sport);
+        th_packet.dport = ntohs(tcph->th_dport);
+        th_packet.raw.ptr = th_packet.pkt + th_packet.l4 + sizeof(struct tcphdr);
+        th_packet.raw.len = th_packet.len - th_packet.l4 - sizeof(struct tcphdr);
+        th_packet.raw.seq = ntohl(tcph->th_seq);
+
+        action = DPI_ACTION_NONE;
+    } else {
+        action = dpi_parse_ethernet(&th_packet);
+        if (unlikely(action == DPI_ACTION_DROP || action == DPI_ACTION_RESET)) {
+            rcu_read_unlock();
+            if (th_packet.frag_trac != NULL) {
+                dpi_frag_discard(th_packet.frag_trac);
+            }
+            //no drop based on l2 decision because
+            //nfq packet's l2 header is fake
+            return 0;
         }
-        //no drop based on l2 decision because
-        //nfq packet's l2 header is fake
-        return 0;
     }
 
     if (isproxymesh || nfq) {
@@ -601,6 +633,10 @@ int dpi_recv_packet(io_ctx_t *ctx, uint8_t *ptr, int len)
         }
         
         dpi_inc_stats_packet(&th_packet);
+    }
+
+    if (ebpf_tls && ebpf_tls_ingress) {
+        th_packet.flags |= DPI_PKT_FLAG_INGRESS;
     }
     
     // Bypass broadcast, multicast and non-ip packet
@@ -635,24 +671,26 @@ int dpi_recv_packet(io_ctx_t *ctx, uint8_t *ptr, int len)
 
     rcu_read_unlock();
 
-    if (likely(!tap && action != DPI_ACTION_DROP && action != DPI_ACTION_RESET &&
-               action != DPI_ACTION_BLOCK)) {
-        if (!tap && nfq) {
-            //nfq accept after inspect l4/7 
-            return 0;
-        }
-        if (th_packet.frag_trac != NULL) {
-            dpi_frag_send(th_packet.frag_trac, ctx);
+    if (!ebpf_tls) {
+        if (likely(!tap && action != DPI_ACTION_DROP && action != DPI_ACTION_RESET &&
+                   action != DPI_ACTION_BLOCK)) {
+            if (!tap && nfq) {
+                //nfq accept after inspect l4/7 
+                return 0;
+            }
+            if (th_packet.frag_trac != NULL) {
+                dpi_frag_send(th_packet.frag_trac, ctx);
+            } else {
+                g_io_callback->send_packet(ctx, ptr, len);
+            }
         } else {
-            g_io_callback->send_packet(ctx, ptr, len);
-        }
-    } else {
-        if (th_packet.frag_trac != NULL) {
-            dpi_frag_discard(th_packet.frag_trac);
-        }
-        if (!tap && nfq) {
-            //nfq drop after inspect l4/7 
-            return 1;
+            if (th_packet.frag_trac != NULL) {
+                dpi_frag_discard(th_packet.frag_trac);
+            }
+            if (!tap && nfq) {
+                //nfq drop after inspect l4/7 
+                return 1;
+            }
         }
     }
     return 0;

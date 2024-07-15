@@ -508,6 +508,14 @@ void dpi_session_release(dpi_session_t *s)
 
     if (s->ip_proto == IPPROTO_TCP) {
         tcp_scan_detection_release(s);
+
+        // remove TCP packet record from g_ebpf_tcp_pkt_map for eBPF TLS sniff
+        rcu_read_lock();
+        dp_ebpf_tcp_pkt_entry_t *entry = rcu_map_lookup(&g_ebpf_tcp_pkt_map, &s->ebpf_tls_pid);
+        if (entry) {
+            rcu_map_del(&g_ebpf_tcp_pkt_map, entry);
+        }
+        rcu_read_unlock();
     }
 
     if (likely(s->term_reason != DPI_SESS_TERM_VOLUME)) {

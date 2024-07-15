@@ -73,8 +73,8 @@ typedef struct dpi_hs_search_ {
 } dpi_hs_search_t;
 
 void dpi_build_dlp_tree (dpi_detector_t *dlp_detector);
-bool dpi_dlp_ep_policy_check(dpi_packet_t *p);
-bool dpi_waf_ep_policy_check(dpi_packet_t *p);
+bool dpi_dlp_ep_policy_check(dpi_packet_t *p, bool ebpf_tls);
+bool dpi_waf_ep_policy_check(dpi_packet_t *p, bool ebpf_tls);
 bool dpi_process_detector(dpi_packet_t *p);
 void dpi_set_pkt_decision(dpi_packet_t *p, int action);
 void dpi_dlp_init_hs_search (void *detector);

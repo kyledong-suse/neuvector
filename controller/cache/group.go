@@ -186,6 +186,7 @@ func group2BriefREST(cache *groupCache, withCap bool) *api.RESTGroupBrief {
 		GrpSessCur:      cache.group.GrpSessCur,
 		GrpSessRate:     cache.group.GrpSessRate,
 		GrpBandWidth:    cache.group.GrpBandWidth,
+		EbpfTls:         cache.group.EbpfTls,
 	}
 	if withCap {
 		g.CapChgMode = &cache.capChgMode
@@ -367,6 +368,31 @@ func isNeuvectorContainerGroup(group string) bool {
 	return false
 }
 
+func isEbpfTlsStatusChanged(group *share.CLUSGroup, existCache *groupCache) bool {
+	if group == nil || group.Kind != share.GroupKindContainer {
+		return false
+	}
+	if existCache == nil {
+		return group.EbpfTls
+	}
+	if existCache.group.EbpfTls != group.EbpfTls {
+		return true
+	}
+
+	return false
+}
+
+func updateEbpfTls(name string, memberIds []string, status bool) {
+	ebpfTls := &share.CLUSEbpfTls{
+		Name:      name,
+		MemberIds: memberIds,
+		Status:    status,
+	}
+	if err := clusHelper.PutEbpfTls(ebpfTls); err != nil {
+		log.WithFields(log.Fields{"error": err}).Error("Put eBPF TLS fail")
+	}
+}
+
 func groupConfigUpdate(nType cluster.ClusterNotifyType, key string, value []byte) {
 	name := share.CLUSGroupKey2Name(key)
 	switch nType {
@@ -409,6 +435,9 @@ func groupConfigUpdate(nType cluster.ClusterNotifyType, key string, value []byte
 			cache.ingressDMZ = exist.ingressDMZ
 			cache.egressDMZ = exist.egressDMZ
 		}
+
+		// check if eBPF TLS status needs to be updated
+		isUpdateEbpfTlsStatus := isEbpfTlsStatusChanged(&group, exist)
 
 		// profile initialization (secondary allocation)
 		if ok, mode := isGroupProfileExist(group.Name, group.ProfileMode); !ok {
@@ -508,6 +537,15 @@ func groupConfigUpdate(nType cluster.ClusterNotifyType, key string, value []byte
 		}
 		if ok := isCreateWafGroup(&group); ok {
 			createWafGroup(group.Name, group.CfgType)
+		}
+
+		if isUpdateEbpfTlsStatus {
+			groupCacheMap[group.Name].group.EbpfTls = group.EbpfTls
+			memberIds := make([]string, 0)
+			for _, m := range cache.members.ToSlice() {
+				memberIds = append(memberIds, m.(string))
+			}
+			updateEbpfTls(group.Name, memberIds, group.EbpfTls)
 		}
 
 		cacheMutexUnlock()

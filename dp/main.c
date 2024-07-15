@@ -34,6 +34,9 @@ extern int dp_data_add_tap(const char *netns, const char *iface, const char *ep_
 
 extern int dp_send_packet(io_ctx_t *context, uint8_t *pkt, int len);
 
+extern void dp_ebpf_netns_init();
+extern void dp_ebpf_tcp_pkt_init();
+
 __thread int THREAD_ID;
 __thread char THREAD_NAME[32];
 
@@ -243,11 +246,11 @@ static void pcap_packet(char *user, struct pcap_pkthdr *hdr, uint8_t *pkt)
     io_ctx_t context;
     struct timeval last_now = g_now;
 
+    memset(&context, 0, sizeof(io_ctx_t));
     context.dp_ctx = NULL;
     g_now = hdr->ts;
     context.tick = g_now.tv_sec;
     context.tap = true;
-    context.quar = false;
     dpi_recv_packet(&context, pkt, hdr->caplen);
 
     struct timeval td = tv_diff(last_now, g_now);
@@ -406,6 +409,10 @@ int main(int argc, char *argv[])
 
     init_dummy_ep(&g_config.dummy_ep);
     g_config.dummy_mac.ep = &g_config.dummy_ep;
+
+    dp_ebpf_netns_init();
+    dp_ebpf_tcp_pkt_init();
+    g_ebpf_tcp_pkt_count = 0;
 
     if (pcap != NULL) {
         g_callback.debug = debug_stdout;

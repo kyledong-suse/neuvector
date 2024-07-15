@@ -30,6 +30,10 @@ extern int dp_read_ring_stats(dp_stats_t *s, int thr_id);
 extern int dp_read_conn_stats(conn_stats_t *s, int thr_id);
 extern int dp_data_add_port_pair(const char *vin_iface, const char *vex_iface,const char *ep_mac, bool quar, int thr_id);
 extern int dp_data_del_port_pair(const char *vin_iface, const char *vex_iface, int thr_id);
+extern int dp_add_ebpf_netns(const char *netns);
+extern int dp_del_ebpf_netns(const char *netns);
+extern int dp_attach_ebpf_tls_sniff(const char *netns, const char *ep_mac, const char *openssl_lib_path, int thr_id);
+extern int dp_destory_ebpf_tls_sniff(const char *netns, int thr_id);
 
 extern rcu_map_t g_ep_map;
 extern struct cds_list_head g_subnet4_list;
@@ -2346,6 +2350,52 @@ static int dp_ctrl_enable_icmp_policy(json_t *msg)
     return 0;
 }
 
+static int dp_ctrl_add_ebpf_netns(json_t *msg)
+{
+    const char *netns;
+
+    netns = json_string_value(json_object_get(msg, "netns"));
+
+    DEBUG_CTRL("add eBPF netns=%s\n", netns);
+
+    return dp_add_ebpf_netns(netns);
+}
+
+static int dp_ctrl_del_ebpf_netns(json_t *msg)
+{
+    const char *netns;
+
+    netns = json_string_value(json_object_get(msg, "netns"));
+
+    DEBUG_CTRL("delete eBPF netns=%s\n", netns);
+
+    return dp_del_ebpf_netns(netns);
+}
+
+static int dp_ctrl_attach_ebpf_tls_sniff(json_t *msg)
+{
+    const char *netns, *ep_mac, *openssl_lib_path;
+
+    netns = json_string_value(json_object_get(msg, "netns"));
+    ep_mac = json_string_value(json_object_get(msg, "epmac"));
+    openssl_lib_path = json_string_value(json_object_get(msg, "openssl_lib_path"));
+
+    DEBUG_CTRL("attach eBPF TLS sniff netns=%s, openssl_lib_path=%s\n", netns, openssl_lib_path);
+
+    return dp_attach_ebpf_tls_sniff(netns, ep_mac, openssl_lib_path, 0);
+}
+
+static int dp_ctrl_destory_ebpf_tls_sniff(json_t *msg)
+{
+    const char *netns;
+
+    netns = json_string_value(json_object_get(msg, "netns"));
+
+    DEBUG_CTRL("destory eBPF TLS sniff netns=%s\n", netns);
+
+    return dp_destory_ebpf_tls_sniff(netns, 0);
+}
+
 #define BUF_SIZE 8192
 char ctrl_msg_buf[BUF_SIZE];
 static int dp_ctrl_handler(int fd)
@@ -2451,6 +2501,14 @@ static int dp_ctrl_handler(int fd)
             ret = dp_ctrl_detect_unmanaged_wl(msg);
         } else if (strcmp(key, "ctrl_enable_icmp_policy") == 0) {
             ret = dp_ctrl_enable_icmp_policy(msg);
+        } else if (strcmp(key, "ctrl_add_ebpf_netns") == 0) {
+            ret = dp_ctrl_add_ebpf_netns(msg);
+        } else if (strcmp(key, "ctrl_del_ebpf_netns") == 0) {
+            ret = dp_ctrl_del_ebpf_netns(msg);
+        } else if (strcmp(key, "ctrl_attach_ebpf_tls_sniff") == 0) {
+            ret = dp_ctrl_attach_ebpf_tls_sniff(msg);
+        } else if (strcmp(key, "ctrl_destory_ebpf_tls_sniff") == 0) {
+            ret = dp_ctrl_destory_ebpf_tls_sniff(msg);
         }
         DEBUG_CTRL("\"%s\" done\n", key);
     }

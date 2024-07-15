@@ -984,6 +984,56 @@ func DPCtrlDlpCfgChgMac(delmacs utils.Set) {
 	}
 }
 
+func DPCtrlAddEbpfNetns(netns string) {
+	log.WithFields(log.Fields{"netns": netns}).Debug("")
+
+	data := DPAddEbpfNetnsReq{
+		AddEbpfNetns: &DPAddEbpfNetns{
+			NetNS: netns,
+		},
+	}
+	msg, _ := json.Marshal(data)
+	dpSendMsg(msg)
+}
+
+func DPCtrlDelEbpfNetns(netns string) {
+	log.WithFields(log.Fields{"netns": netns}).Debug("")
+
+	data := DPDelEbpfNetnsReq{
+		DelEbpfNetns: &DPDelEbpfNetns{
+			NetNS: netns,
+		},
+	}
+	msg, _ := json.Marshal(data)
+	dpSendMsg(msg)
+}
+
+func DPCtrlAttachEbpfTlsSniff(netns string, epmac net.HardwareAddr, opensslLibPath string) {
+	log.WithFields(log.Fields{"netns": netns}).Debug("")
+
+	data := DPAttachEbpfTlsSniffReq{
+		AttachEbpfTlsSniff: &DPAttachEbpfTlsSniff{
+			NetNS:          netns,
+			EPMAC:          epmac.String(),
+			OpensslLibPath: opensslLibPath,
+		},
+	}
+	msg, _ := json.Marshal(data)
+	dpSendMsg(msg)
+}
+
+func DPCtrlDestoryEbpfTlsSniff(netns string) {
+	log.WithFields(log.Fields{"netns": netns}).Debug("")
+
+	data := DPDestoryEbpfTlsSniffReq{
+		DestoryEbpfTlsSniff: &DPDestoryEbpfTlsSniff{
+			NetNS: netns,
+		},
+	}
+	msg, _ := json.Marshal(data)
+	dpSendMsg(msg)
+}
+
 // --- keep alive
 
 func cbKeepAlive(buf []byte, param interface{}) bool {

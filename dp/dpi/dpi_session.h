@@ -130,6 +130,7 @@ typedef struct dpi_session_ {
     uint16_t xff_port;
     uint8_t vhost[256];
     uint16_t vhlen;
+    uint32_t ebpf_tls_pid;
 } dpi_session_t;
 
 static inline uint32_t dpi_wing_length(const dpi_wing_t *wing)

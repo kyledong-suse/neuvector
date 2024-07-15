@@ -637,6 +637,9 @@ func handlerGroupCreate(w http.ResponseWriter, r *http.Request, ps httprouter.Pa
 	if rg.GrpBandWidth != nil {
 		cg.GrpBandWidth = *rg.GrpBandWidth
 	}
+	if rg.EbpfTls != nil {
+		cg.EbpfTls = *rg.EbpfTls
+	}
 
 	// Write group definition into key-value store. Make sure group doesn't exist.
 	if err := clusHelper.PutGroup(&cg, true); err != nil {
@@ -777,6 +780,9 @@ func handlerGroupConfig(w http.ResponseWriter, r *http.Request, ps httprouter.Pa
 	}
 	if rg.GrpBandWidth != nil {
 		cg.GrpBandWidth = *rg.GrpBandWidth
+	}
+	if rg.EbpfTls != nil {
+		cg.EbpfTls = *rg.EbpfTls
 	}
 
 	if !acc.Authorize(cg, nil) {

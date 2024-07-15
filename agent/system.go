@@ -209,6 +209,8 @@ func initWorkloadPolicyMap() map[string]*policy.WorkloadIPPolicyInfo {
 		}
 		pInfo := policy.WorkloadIPPolicyInfo{
 			RuleMap: make(map[string]*dp.DPPolicyIPRule),
+			AppMap: c.appMap,
+			PortMap: c.portMap,
 			Policy: dp.DPWorkloadIPPolicy{
 				WlID:        wlID,
 				WorkloadMac: nil,
@@ -1443,5 +1445,51 @@ func domainConfigUpdate(nType cluster.ClusterNotifyType, key string, value []byt
 
 		// Shouldn't happen, but have the logic anyway. Not delete kv, only initial the cache
 		domainCacheMap[name] = &domainCache{domain: initDomain(name, nil)}
+	}
+}
+
+func ebpfTlsConfigHandler(nType cluster.ClusterNotifyType, key string, value []byte, modifyIdx uint64) {
+	name := share.CLUSEbpfTlsKey2Name(key)
+	log.WithFields(log.Fields{"name": name}).Debug("Config eBPF TLS status")
+	
+	if nType == cluster.ClusterNotifyDelete {
+		// This should not happen
+		log.Error("eBPF TLS key delete not supported!")
+		return
+	}
+
+	//get ebpf group from cluster
+	var s share.CLUSEbpfTls
+	if err := json.Unmarshal(value, &s); err != nil {
+		log.WithFields(log.Fields{"error": err}).Error()
+		return
+	}
+
+	var memberIds utils.Set = utils.NewSet()
+	for _, e := range s.MemberIds {
+		memberIds.Add(e)
+	}
+	
+	for wlID, c := range gInfo.activeContainers {
+		if memberIds.Contains(wlID) {
+			netns := global.SYS.GetNetNamespacePath(c.pid)
+			if s.Status {
+				// attach eBPF observability to container's lib
+				if opensslLibPath, err := getOpensslLibPath(c.lowerDir); err!=nil {
+					log.WithFields(log.Fields{"error": err}).Info("Couldn't find OpenSSL lib library")
+				} else {
+					dp.DPCtrlAddEbpfNetns(netns)
+					for _, pair := range c.intcpPairs {
+						for _, libPath := range opensslLibPath {
+							dp.DPCtrlAttachEbpfTlsSniff(netns, pair.MAC, libPath)
+						}
+					}
+				}
+			} else {
+				// remove eBPF observability from container's lib
+				dp.DPCtrlDelEbpfNetns(netns)
+				dp.DPCtrlDestoryEbpfTlsSniff(netns)
+			}
+		}
 	}
 }

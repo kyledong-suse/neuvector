@@ -392,3 +392,37 @@ type DPDlpCfgMac struct {
 type DPDlpCfgMACReq struct {
 	DPDlpChgCfgMac *DPDlpCfgMac `json:"ctrl_cfg_dlpmac"`
 }
+
+type DPAddEbpfNetns struct {
+	NetNS string `json:"netns"`
+}
+
+type DPAddEbpfNetnsReq struct {
+	AddEbpfNetns *DPAddEbpfNetns `json:"ctrl_add_ebpf_netns"`
+}
+
+type DPDelEbpfNetns struct {
+	NetNS string `json:"netns"`
+}
+
+type DPDelEbpfNetnsReq struct {
+	DelEbpfNetns *DPDelEbpfNetns `json:"ctrl_del_ebpf_netns"`
+}
+
+type DPAttachEbpfTlsSniff struct {
+	NetNS          string `json:"netns"`
+	EPMAC          string `json:"epmac"`
+	OpensslLibPath string `json:"openssl_lib_path"`
+}
+
+type DPAttachEbpfTlsSniffReq struct {
+	AttachEbpfTlsSniff *DPAttachEbpfTlsSniff `json:"ctrl_attach_ebpf_tls_sniff"`
+}
+
+type DPDestoryEbpfTlsSniff struct {
+	NetNS string `json:"netns"`
+}
+
+type DPDestoryEbpfTlsSniffReq struct {
+	DestoryEbpfTlsSniff *DPDestoryEbpfTlsSniff `json:"ctrl_destory_ebpf_tls_sniff"`
+}

@@ -512,8 +512,7 @@ type RESTEULA struct {
 
 type RESTEULAData struct {
 	EULA            *RESTEULA `json:"eula"`
-	BootstrapPwdCmd string    `json:"bootstrap_password_command"`       // k8s command to retrieve the bootstrap password
-	K8sRbacAlertMsg string    `json:"k8s_rbac_alert_message,omitempty"` // alert message when k8s role/rolebinding neuvector-binding-secret is not correct
+	BootstrapPwdCmd string    `json:"bootstrap_password_command"` // k8s command to retrieve the bootstrap password
 }
 
 type RESTList struct {
@@ -560,34 +559,26 @@ type RESTPermitsAssigned struct {
 	Domains []string              `json:"domains"` // all domains in this slice have the same permissions assigned
 }
 
-type RESTRemoteRolePermits struct {
-	Role                string                `json:"role"`                                // global role on managed clusters in fed
-	RoleDomains         map[string][]string   `json:"role_domains,omitempty"`              // role -> domains on managed clusters in fed
-	ExtraPermits        []*RESTRolePermission `json:"extra_permissions,omitempty"`         // extra permissions(other than 'RoleDomains') for global domain on managed clusters in fed. only for Rancher SSO
-	ExtraPermitsDomains []RESTPermitsAssigned `json:"extra_permissions_domains,omitempty"` // list of extra permissions(other than 'RoleDomains') for namespaces on managed clusters in fed. only for Rancher SSO
-}
-
 type RESTUser struct {
-	Fullname              string                 `json:"fullname"`
-	Server                string                 `json:"server"`
-	Username              string                 `json:"username"`
-	Password              string                 `json:"password,cloak"`
-	EMail                 string                 `json:"email"`
-	Role                  string                 `json:"role"`
-	ExtraPermits          []*RESTRolePermission  `json:"extra_permissions,omitempty"` // extra permissions(other than 'Role') on global domain. only for Rancher SSO
-	Timeout               uint32                 `json:"timeout"`
-	Locale                string                 `json:"locale"`
-	DefaultPWD            bool                   `json:"default_password"`                    // If the user is using default password
-	ModifyPWD             bool                   `json:"modify_password"`                     // if the password should be modified
-	RoleDomains           map[string][]string    `json:"role_domains,omitempty"`              // role -> domains
-	ExtraPermitsDomains   []RESTPermitsAssigned  `json:"extra_permissions_domains,omitempty"` // list of extra permissions(other than 'RoleDomains') on namespaces. only for Rancher SSO
-	RemoteRolePermits     *RESTRemoteRolePermits `json:"remote_role_permissions,omitempty"`   // permissions on managed clusters in fed. only for Rancher SSO
-	LastLoginTimeStamp    int64                  `json:"last_login_timestamp"`
-	LastLoginAt           string                 `json:"last_login_at"`
-	LoginCount            uint32                 `json:"login_count"`
-	BlockedForFailedLogin bool                   `json:"blocked_for_failed_login"`     // if the user is blocked for too mnay failed login
-	BlockedForPwdExpired  bool                   `json:"blocked_for_password_expired"` // if the user is blocked for expired password
-	PwdResettable         bool                   `json:"password_resettable"`          // if the user's password can be reset by the current login user
+	Fullname              string                `json:"fullname"`
+	Server                string                `json:"server"`
+	Username              string                `json:"username"`
+	Password              string                `json:"password,cloak"`
+	EMail                 string                `json:"email"`
+	Role                  string                `json:"role"`
+	ExtraPermits          []*RESTRolePermission `json:"extra_permissions,omitempty"` // extra permissions(other than 'Role') on global domain. only for Rancher SSO
+	Timeout               uint32                `json:"timeout"`
+	Locale                string                `json:"locale"`
+	DefaultPWD            bool                  `json:"default_password"`                    // If the user is using default password
+	ModifyPWD             bool                  `json:"modify_password"`                     // if the password should be modified
+	RoleDomains           map[string][]string   `json:"role_domains,omitempty"`              // role -> domains
+	ExtraPermitsDomains   []RESTPermitsAssigned `json:"extra_permissions_domains,omitempty"` // list of extra permissions(other than 'RoleDomains') on namespaces. only for Rancher SSO
+	LastLoginTimeStamp    int64                 `json:"last_login_timestamp"`
+	LastLoginAt           string                `json:"last_login_at"`
+	LoginCount            uint32                `json:"login_count"`
+	BlockedForFailedLogin bool                  `json:"blocked_for_failed_login"`     // if the user is blocked for too mnay failed login
+	BlockedForPwdExpired  bool                  `json:"blocked_for_password_expired"` // if the user is blocked for expired password
+	PwdResettable         bool                  `json:"password_resettable"`          // if the user's password can be reset by the current login user
 }
 
 type RESTUserConfig struct {
@@ -1220,6 +1211,7 @@ type RESTGroupBrief struct {
 	GrpSessRate     uint32   `json:"group_sess_rate"`
 	GrpBandWidth    uint32   `json:"group_band_width"`
 	RESTGroupCaps
+	EbpfTls         bool     `json:"ebpf_tls"`
 }
 
 type RESTGroup struct {
@@ -1247,6 +1239,7 @@ type RESTGroupConfig struct {
 	GrpSessCur   *uint32              `json:"group_sess_cur,omitempty"`
 	GrpSessRate  *uint32              `json:"group_sess_rate,omitempty"`
 	GrpBandWidth *uint32              `json:"group_band_width,omitempty"`
+	EbpfTls      *bool                `json:"ebpf_tls,omitempty"`
 }
 
 type RESTCrdGroupConfig struct {
@@ -3521,8 +3514,8 @@ type AdmCtlTimeStamps struct {
 	Parsed     time.Time
 	GonnaFetch time.Time
 	Fetched    time.Time
-	Evaluated  time.Time
-	Images     string // the original images specified in the admission request
+	Matched    time.Time
+	Image      string // the original image specified in the admission request
 }
 
 type RESTAdmissionStatsData struct {

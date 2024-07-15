@@ -302,6 +302,9 @@ type ClusterHelper interface {
 
 	// mock for unittest
 	SetCacheMockCallback(keyStore string, mockFunc MockKvConfigUpdateFunc)
+
+	// ebpf
+	PutEbpfTls(s *share.CLUSEbpfTls) error
 }
 
 var (
@@ -3352,4 +3355,10 @@ func (m clusterHelper) CreateQuerySessionRequest(qsr *api.QuerySessionRequest) e
 func (m clusterHelper) DeleteQuerySessionRequest(queryToken string) {
 	key := share.CLUSQuerySessionKey(queryToken)
 	cluster.Delete(key)
+}
+
+func (m clusterHelper) PutEbpfTls(s *share.CLUSEbpfTls) error {
+	key := share.CLUSEbpfTlsKey(s.Name)
+	value, _ := enc.Marshal(s)
+	return cluster.Put(key, value)
 }

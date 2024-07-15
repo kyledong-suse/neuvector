@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
@@ -78,6 +79,7 @@ type containerData struct {
 	cgroupMemory   string
 	cgroupCPUAcct  string
 	rootFs         string
+	lowerDir       []string
 	upperDir       string
 	propertyFilled bool
 	benchReported  bool
@@ -359,6 +361,32 @@ func isSidecarContainer(labels map[string]string) bool {
 		return true
 	}
 	return false
+}
+
+func getOpensslLibPath(lowerDir []string) ([]string, error) {
+	libPath := make([]string, 0)
+	for _, dir := range lowerDir {
+		err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				log.WithFields(log.Fields{"dir": dir, "error": err}).Error("Error encountered while walking through the path")
+				return err // return the error encountered
+			}
+			if matched, _ := filepath.Match("libssl.so*", info.Name()); matched {
+				libPath = append(libPath, path)
+			}
+			return nil
+		})
+
+		if err != nil && len(libPath) == 0 {
+			return nil, err
+		}
+	}
+
+	if len(libPath) == 0 {
+		return nil, fmt.Errorf("openSSL lib file not found")
+	}
+
+	return libPath, nil
 }
 
 func runtimeEventCallback(ev container.Event, id string, pid int) {
@@ -1160,6 +1188,19 @@ func scheduleTask(id string, info *container.ContainerMetaExtra, req int, delay 
 	return nil
 }
 
+// ContainerLayer is a read-only layer in the storage driver system
+func lookupContainerLowerLayerPath(pid int) ([]string, error) {
+	switch rtStorageDriver {
+	case "overlay", "overlay2", "overlayFS", "overlayfs", "overlayFs":
+		return global.SYS.ReadMountedLowerLayerPath(pid)
+	default: // best offer
+		if d, err := global.SYS.ReadMountedLowerLayerPath(pid); err == nil {
+			return d, err
+		}
+	}
+	return nil, fmt.Errorf("not support")
+}
+
 // ContainerLayer is a write-able layer in the storage driver system
 func lookupContainerLayerPath(pid int, id string) (string, string, error) {
 	switch rtStorageDriver {
@@ -1241,9 +1282,10 @@ func fillContainerProperties(c *containerData, parent *containerData,
 	c.cgroupMemory, _ = global.SYS.GetContainerCgroupPath(info.Pid, "memory")
 	c.cgroupCPUAcct, _ = global.SYS.GetContainerCgroupPath(info.Pid, "cpuacct")
 
+	c.lowerDir, _ = lookupContainerLowerLayerPath(c.pid)
 	c.upperDir, c.rootFs, _ = lookupContainerLayerPath(c.pid, c.id)
 	c.propertyFilled = true
-	log.WithFields(log.Fields{"uppDir": c.upperDir, "rootFs": c.rootFs, "id": c.id}).Debug()
+	log.WithFields(log.Fields{"lowerDir": c.lowerDir, "uppDir": c.upperDir, "rootFs": c.rootFs, "id": c.id}).Debug()
 }
 
 func handleNetworkDelete(netID string) {

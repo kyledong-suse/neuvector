@@ -205,6 +205,9 @@ typedef struct io_ctx_ {
     bool tc;
     bool quar;
     bool nfq;
+    bool ebpf_tls;
+    bool ebpf_tls_ingress;
+    uint32_t ebpf_tls_pid;
 } io_ctx_t;
 
 typedef struct io_callback_ {
@@ -411,6 +414,45 @@ typedef struct dpi_dlpbld_mac_ {
     struct ether_addr *add_mac_list;
 } dpi_dlpbld_mac_t;
 
+typedef struct dp_ebpt_netns_record_ {
+    uint32_t inum;
+} dp_ebpt_netns_record_t;
+
+typedef struct dp_ebpf_netns_entry_ {
+    struct cds_lfht_node node;
+
+    dp_ebpt_netns_record_t *r;
+} dp_ebpf_netns_entry_t;
+
+#define EBPF_TCP_PKT_RECORD_TIMEOUT 1800 // 30 mins, 10 mins more than SESS_TIMEOUT_TCP_ACTIVE = 1200s = 20 mins
+#define TASK_COMM_LEN 16
+#define PERF_BUFFER_PAGES 16
+#define PERF_POLL_TIMEOUT_MS 2
+typedef struct dp_ebpt_tcp_pkt_record_ {
+    uint32_t pid;
+    char comm[TASK_COMM_LEN];
+    sa_family_t sa_af;
+    union {
+        uint32_t saddr_v4;
+        uint8_t  saddr_v6[16];
+    };
+    union {
+        uint32_t daddr_v4;
+        uint8_t  daddr_v6[16];
+    };
+    uint16_t lport;
+    uint16_t dport;
+    uint32_t seq;
+    uint32_t ack_seq;
+} dp_ebpf_tcp_pkt_record_t;
+
+typedef struct dp_ebpf_tcp_pkt_entry_ {
+    struct cds_lfht_node node;
+    timer_entry_t ts_entry;
+
+    dp_ebpf_tcp_pkt_record_t *r;
+} dp_ebpf_tcp_pkt_entry_t;
+
 int dpi_sig_bld(dpi_dlpbld_t *dlpsig, int flag);
 int dpi_sig_bld_update_mac(dpi_dlpbld_mac_t *dlpbld_mac);
 void dp_dlp_destroy(void *dlp_detector);
@@ -424,5 +466,9 @@ extern pthread_cond_t g_dlp_ctrl_req_cond;
 extern pthread_mutex_t g_dlp_ctrl_req_lock;
 extern int dp_dlp_wait_ctrl_req_thr(int req);
 extern void dp_ctrl_release_ip_fqdn_storage(dpi_ip_fqdn_storage_entry_t *entry);
+
+extern rcu_map_t g_ebpf_netns_map;
+extern rcu_map_t g_ebpf_tcp_pkt_map;
+extern uint16_t g_ebpf_tcp_pkt_count;
 
 #endif

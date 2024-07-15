@@ -13,6 +13,7 @@
 #include <time.h>
 #include <sys/types.h>
 #include <sys/eventfd.h>
+#include <sys/stat.h>
 
 #include "urcu.h"
 #include "urcu/rcuhlist.h"
@@ -21,6 +22,9 @@
 #include "apis.h"
 #include "debug.h"
 #include "utils/helper.h"
+
+#include "tls_sniff.skel.h"
+#include "tcp_socket.skel.h"
 
 extern dp_mnt_shm_t *g_shm;
 
@@ -46,6 +50,7 @@ dp_thread_data_t g_dp_thread_data[MAX_DP_THREADS];
 #define th_epoll_fd(thr_id)          (g_dp_thread_data[thr_id].epoll_fd)
 #define th_ctx_list(thr_id)          (g_dp_thread_data[thr_id].ctx_list)
 #define th_notc_nfq_ctx_list(thr_id) (g_dp_thread_data[thr_id].notc_nfq_ctx_list)
+#define th_ebpf_ctx_list(thr_id)     (g_dp_thread_data[thr_id].ebpf_ctx_list)
 #define th_ctx_free_list(thr_id)     (g_dp_thread_data[thr_id].ctx_free_list)
 #define th_ctx_inline(thr_id)        (g_dp_thread_data[thr_id].ctx_inline)
 #define th_ctrl_dp_lock(thr_id)      (g_dp_thread_data[thr_id].ctrl_dp_lock)
@@ -64,6 +69,8 @@ void dp_close_socket(dp_context_t *ctx);
 int dp_rx(dp_context_t *ctx, uint32_t tick);
 void dp_get_stats(dp_context_t *ctx);
 int dp_open_nfq_handle(dp_context_t *ctx, int qnum, bool jumboframe, uint blocks, uint batch);
+int dp_open_ebpf_tcp_socket_handle(dp_context_t *ctx);
+int dp_open_ebpf_tls_sniff_handle(dp_context_t *ctx, const char *openssl_lib_path);
 
 dp_context_t *dp_inline_context()
 {
@@ -84,11 +91,12 @@ int dp_read_ring_stats(dp_stats_t *s, int thr_id)
 {
     dp_context_t *ctx;
     struct cds_hlist_node *itr;
-    struct cds_hlist_head *list, *list1;
+    struct cds_hlist_head *list, *list1, *list2;
 
     thr_id = thr_id % MAX_DP_THREADS;
     list = &th_ctx_list(thr_id);
     list1 = &th_notc_nfq_ctx_list(thr_id);
+    list2 = &th_ebpf_ctx_list(thr_id);
 
     pthread_mutex_lock(&th_ctrl_dp_lock(thr_id));
 
@@ -102,6 +110,15 @@ int dp_read_ring_stats(dp_stats_t *s, int thr_id)
     }
 
     cds_hlist_for_each_entry_rcu(ctx, itr, list1, link) {
+        dp_get_stats(ctx);
+
+        s->rx += ctx->stats.rx;
+        s->rx_drops += ctx->stats.rx_drops;
+        s->tx += ctx->stats.tx;
+        s->tx_drops += ctx->stats.tx_drops;
+    }
+
+    cds_hlist_for_each_entry_rcu(ctx, itr, list2, link) {
         dp_get_stats(ctx);
 
         s->rx += ctx->stats.rx;
@@ -200,6 +217,65 @@ static dp_context_t *dp_alloc_nfq_context(const char *iface, int qnum, int thr_i
     return ctx;
 }
 
+static dp_context_t *dp_alloc_ebpf_tcp_socket_context()
+{
+    dp_context_t *ctx;
+
+    ctx = calloc(1, sizeof(*ctx));
+    if (ctx == NULL) {
+        return NULL;
+    }
+
+    if (dp_open_ebpf_tcp_socket_handle(ctx) != 0) {
+        DEBUG_ERROR(DBG_CTRL, "fail to open eBPF TCP socket handle\n");
+        if (ctx && ctx->ebpf_ctx.ebpf_tcp_socket_pb) {
+            perf_buffer__free(ctx->ebpf_ctx.ebpf_tcp_socket_pb);
+            ctx->ebpf_ctx.ebpf_tcp_socket_pb = NULL;
+        }
+        if (ctx && ctx->ebpf_ctx.ebpf_tcp_socket_obj) {
+            tcp_socket_bpf__destroy(ctx->ebpf_ctx.ebpf_tcp_socket_obj);
+            ctx->ebpf_ctx.ebpf_tcp_socket_obj = NULL;
+        }
+        free(ctx);
+        return NULL;
+    }
+    ctx->ebpf = true;
+
+    DEBUG_CTRL("eBPF TCP socket ctx=%p\n", ctx);
+
+    return ctx;
+}
+
+static dp_context_t *dp_alloc_ebpf_tls_sniff_context(const char *openssl_lib_path, int thr_id)
+{
+    dp_context_t *ctx;
+
+    ctx = calloc(1, sizeof(*ctx));
+    if (ctx == NULL) {
+        return NULL;
+    }
+
+    if (dp_open_ebpf_tls_sniff_handle(ctx, openssl_lib_path) != 0) {
+        DEBUG_ERROR(DBG_CTRL, "fail to open eBPF TLS sniff handle for openssl_lib_path=%s\n", openssl_lib_path);
+        if (ctx && ctx->ebpf_ctx.ebpf_tls_sniff_pb) {
+            perf_buffer__free(ctx->ebpf_ctx.ebpf_tls_sniff_pb);
+            ctx->ebpf_ctx.ebpf_tls_sniff_pb = NULL;
+        }
+        if (ctx && ctx->ebpf_ctx.ebpf_tls_sniff_obj) {
+            tls_sniff_bpf__destroy(ctx->ebpf_ctx.ebpf_tls_sniff_obj);
+            ctx->ebpf_ctx.ebpf_tls_sniff_obj = NULL;
+        }
+        free(ctx);
+        return NULL;
+    }
+    ctx->thr_id = thr_id;
+    ctx->ebpf = true;
+    
+    DEBUG_CTRL("eBPF TLS sniff ctx=%p\n", ctx);
+
+    return ctx;
+}
+
 static int dp_epoll_add_ctx(dp_context_t *ctx, int thr_id)
 {
     ctx->ee.events = EPOLLIN;
@@ -250,6 +326,33 @@ static void dp_release_context(dp_context_t *ctx, bool kill)
 
     if (kill) {
         dp_close_socket(ctx);
+        free(ctx);
+    } else {
+        DEBUG_CTRL("add context to free list, ctx=%s, ts=%u\n", ctx->name, g_seconds);
+        timer_queue_append(&th_ctx_free_list(ctx->thr_id), &ctx->free_node, g_seconds);
+        ctx->released = 1;
+    }
+}
+
+// Not to release socket memory if 'kill' is false
+static void dp_release_ebpf_context(dp_context_t *ctx, bool kill)
+{
+    DEBUG_CTRL("ctx=%s\n", ctx->name);
+
+    cds_hlist_del(&ctx->link);
+
+    if (kill) {
+        if (ctx->ebpf_ctx.type == DP_EBPF_TCP_SOCKET) {
+            perf_buffer__free(ctx->ebpf_ctx.ebpf_tcp_socket_pb);
+            tcp_socket_bpf__destroy(ctx->ebpf_ctx.ebpf_tcp_socket_obj);
+            ctx->ebpf_ctx.ebpf_tcp_socket_pb = NULL;
+            ctx->ebpf_ctx.ebpf_tcp_socket_obj = NULL;
+        } else if (ctx->ebpf_ctx.type == DP_EBPF_TLS_SNIFF) {
+            perf_buffer__free(ctx->ebpf_ctx.ebpf_tls_sniff_pb);
+            tls_sniff_bpf__destroy(ctx->ebpf_ctx.ebpf_tls_sniff_obj);
+            ctx->ebpf_ctx.ebpf_tls_sniff_pb = NULL;
+            ctx->ebpf_ctx.ebpf_tls_sniff_obj = NULL;
+        }
         free(ctx);
     } else {
         DEBUG_CTRL("add context to free list, ctx=%s, ts=%u\n", ctx->name, g_seconds);
@@ -653,6 +756,149 @@ int dp_data_del_port_pair(const char *vin_iface, const char *vex_iface, int thr_
     return ret;
 }
 
+static uint32_t get_netns_inum(const char *netns)
+{
+    struct stat st;
+    int fd;
+
+    if ((fd = open(netns, O_RDONLY)) == -1) {
+        DEBUG_ERROR(DBG_CTRL, "failed to open network namespace: netns=%s\n", netns);
+        return -1;
+    }
+    if (fstat(fd, &st) == -1) {
+        DEBUG_ERROR(DBG_CTRL, "failed to get stat: netns=%s\n", netns);
+        close(fd);
+        return -1;
+    }
+    close(fd);
+    return st.st_ino;
+}
+
+int dp_add_ebpf_netns(const char *netns)
+{
+    uint32_t inum;
+    if ((inum = get_netns_inum(netns)) < 0) {
+        return -1;
+    }
+
+    dp_ebpf_netns_entry_t *entry = calloc(1, sizeof(*entry));
+    if (!entry) {
+        DEBUG_ERROR(DBG_CTRL, "OOM!!!\n");
+        return -1;
+    }
+
+    dp_ebpt_netns_record_t *r = calloc(1, sizeof(*r));
+    if (!r) {
+        DEBUG_ERROR(DBG_CTRL, "OOM!!!\n");
+        free(entry);
+        return -1;
+    }
+    r->inum = inum;
+
+    entry->r = r;
+    rcu_map_add(&g_ebpf_netns_map, entry, &inum);
+
+    return 0;
+}
+
+int dp_del_ebpf_netns(const char *netns)
+{
+    uint32_t inum;
+    if ((inum = get_netns_inum(netns)) < 0) {
+        return -1;
+    }
+
+    rcu_read_lock();
+    dp_ebpf_netns_entry_t *entry = rcu_map_lookup(&g_ebpf_netns_map, &inum);
+    if (entry) {
+        rcu_map_del(&g_ebpf_netns_map, entry);
+    }
+    rcu_read_unlock();
+
+    return 0;
+}
+
+static const char *get_ebpf_openssl_name(char *name, const char *netns)
+{
+    snprintf(name, CTX_NAME_LEN, "%s-%s", CTX_EBPF_OPENSSL_PREFIX, netns);
+    return name;
+}
+
+int dp_attach_ebpf_tls_sniff(const char *netns, const char *ep_mac, const char *openssl_lib_path, int thr_id)
+{
+    int ret = 0;
+    dp_context_t *ctx;
+
+    thr_id = thr_id % MAX_DP_THREADS;
+
+    int curns_fd;
+    if ((curns_fd = enter_netns(netns)) < 0) {
+        return -1;
+    }
+
+    pthread_mutex_lock(&th_ctrl_dp_lock(thr_id));
+
+    do {
+        char name[CTX_NAME_LEN];
+        get_ebpf_openssl_name(name, netns);
+        ctx = dp_lookup_context(&th_ebpf_ctx_list(thr_id), name);
+        if (ctx != NULL) {
+            // handle mac address change
+            ether_aton_r(ep_mac, &ctx->ep_mac);
+            DEBUG_CTRL("eBPF TLS sniff already exists, netns=%s openssl_lib_path=%s\n", netns, openssl_lib_path);
+            break;
+        }
+
+        ctx = dp_alloc_ebpf_tls_sniff_context(openssl_lib_path, thr_id);
+        if (ctx == NULL) {
+            ret = -1;
+            break;
+        }
+
+        strlcpy(ctx->name, name, sizeof(ctx->name));
+        ctx->ebpf_ctx.type = DP_EBPF_TLS_SNIFF;
+        ether_aton_r(ep_mac, &ctx->ep_mac);
+        cds_hlist_add_head_rcu(&ctx->link, &th_ebpf_ctx_list(thr_id));
+
+        DEBUG_CTRL("eBPF TLS sniff attached netns=%s openssl_lib_path=%s\n", netns, openssl_lib_path);
+    } while (false);
+
+    pthread_mutex_unlock(&th_ctrl_dp_lock(thr_id));
+
+    restore_netns(curns_fd);
+
+    return ret;
+}
+
+int dp_destory_ebpf_tls_sniff(const char *netns, int thr_id)
+{
+    int ret = 0;
+    dp_context_t *ctx;
+
+    thr_id = thr_id % MAX_DP_THREADS;
+
+    pthread_mutex_lock(&th_ctrl_dp_lock(thr_id));
+
+    char name[CTX_NAME_LEN];
+    get_ebpf_openssl_name(name, netns);
+    ctx = dp_lookup_context(&th_ebpf_ctx_list(thr_id), name);
+    if (ctx != NULL) {
+        cds_hlist_del(&ctx->link);
+        perf_buffer__free(ctx->ebpf_ctx.ebpf_tls_sniff_pb);
+        tls_sniff_bpf__destroy(ctx->ebpf_ctx.ebpf_tls_sniff_obj);
+        ctx->ebpf_ctx.ebpf_tls_sniff_pb = NULL;
+        ctx->ebpf_ctx.ebpf_tls_sniff_obj = NULL;
+        free(ctx);
+        DEBUG_CTRL("removed eBPF TLS sniff, netns=%s\n", netns);
+    } else {
+        ret = -1;
+        DEBUG_CTRL("eBPF TLS sniff cannot be found, netns=%s\n", netns);
+    }
+
+    pthread_mutex_unlock(&th_ctrl_dp_lock(thr_id));
+
+    return ret;
+}
 
 /* This function can only be called by dp_data_wait_ctrl_req_thr() */
 static int dp_ctrl_wait_dp_threads(int threads)
@@ -842,6 +1088,30 @@ static dp_bld_dlp_context_t *dp_add_dlp_ctrl_req_event()
     return ctx;
 }
 
+static dp_context_t *dp_add_ebpf_tcp_socket_event()
+{
+    dp_context_t *ctx;
+
+    DEBUG_FUNC_ENTRY(DBG_CTRL);
+
+    ctx = calloc(1, sizeof(*ctx));
+    if (ctx == NULL) {
+        return NULL;
+    }
+
+    ctx = dp_alloc_ebpf_tcp_socket_context();
+    if (ctx == NULL) {
+        return NULL;
+    }
+
+    strlcpy(ctx->name, CTX_EBPF_TCP_SOCKET_PREFIX, sizeof(ctx->name));
+    ctx->ebpf_ctx.type = DP_EBPF_TCP_SOCKET;
+
+    DEBUG_CTRL("eBPF TCP socket attached\n");
+
+    return ctx;
+}
+
 static inline struct timespec ts_diff(struct timespec s, struct timespec e)
 {
     struct timespec d;
@@ -861,6 +1131,7 @@ void *dp_data_thr(void *args)
     uint32_t tmo;
     int thr_id = *(int *)args;
     dp_context_t *ctrl_req_ev_ctx;
+    dp_context_t *ebpf_tcp_socket_ev_ctx;
 
     thr_id = thr_id % MAX_DP_THREADS;
 
@@ -878,6 +1149,12 @@ void *dp_data_thr(void *args)
         return NULL;
     }
 
+    ebpf_tcp_socket_ev_ctx = dp_add_ebpf_tcp_socket_event();
+    if (ebpf_tcp_socket_ev_ctx == NULL) {
+        DEBUG_ERROR(DBG_CTRL, "get ebpf_tcp_socket_ev_ctx error: %s\n", ebpf_tcp_socket_ev_ctx->name);
+        return NULL;
+    }
+
     rcu_register_thread();
 
     g_shm->dp_active[thr_id] = true;
@@ -885,6 +1162,7 @@ void *dp_data_thr(void *args)
     pthread_mutex_init(&th_ctrl_dp_lock(thr_id), NULL);
     CDS_INIT_HLIST_HEAD(&th_ctx_list(thr_id));
     CDS_INIT_HLIST_HEAD(&th_notc_nfq_ctx_list(thr_id));
+    CDS_INIT_HLIST_HEAD(&th_ebpf_ctx_list(thr_id));
     timer_queue_init(&th_ctx_free_list(thr_id), RELEASED_CTX_TIMEOUT);
 
     // Per-thread init
@@ -967,6 +1245,17 @@ void *dp_data_thr(void *args)
             }
         }
 
+        // eBPF TCP socket perf buffer poll
+        dp_rx(ebpf_tcp_socket_ev_ctx, g_seconds);
+
+        // eBPF TLS sniff perf buffer poll
+        dp_context_t *ebpf_tls_sniff_ctx;
+        pthread_mutex_lock(&th_ctrl_dp_lock(thr_id));
+        cds_hlist_for_each_entry_safe(ebpf_tls_sniff_ctx, titr, tnext, &th_ebpf_ctx_list(thr_id), link) {
+            dp_rx(ebpf_tls_sniff_ctx, g_seconds);
+        }
+        pthread_mutex_unlock(&th_ctrl_dp_lock(thr_id));
+
         if (polling_ctx != NULL) {
             dp_epoll_remove_ctx(polling_ctx);
         }
@@ -992,6 +1281,7 @@ void *dp_data_thr(void *args)
                 pthread_mutex_lock(&th_ctrl_dp_lock(thr_id));
                 dp_refresh_stats(&th_ctx_list(thr_id));
                 dp_refresh_stats(&th_notc_nfq_ctx_list(thr_id));
+                dp_refresh_stats(&th_ebpf_ctx_list(thr_id));
                 pthread_mutex_unlock(&th_ctrl_dp_lock(thr_id));
                 stats_tick = 0;
             }
@@ -1019,7 +1309,12 @@ void *dp_data_thr(void *args)
     cds_hlist_for_each_entry_safe(ctx, itr, next, &th_notc_nfq_ctx_list(thr_id), link) {
         dp_release_context(ctx, true);
     }
+    cds_hlist_for_each_entry_safe(ctx, itr, next, &th_ebpf_ctx_list(thr_id), link) {
+        dp_release_ebpf_context(ctx, true);
+    }
     pthread_mutex_unlock(&th_ctrl_dp_lock(thr_id));
+
+    dp_release_ebpf_context(ebpf_tcp_socket_ev_ctx, true);
 
     close(ctrl_req_ev_ctx->fd);
     free(ctrl_req_ev_ctx);
