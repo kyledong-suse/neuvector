@@ -16,6 +16,7 @@ import (
 
 	"github.com/neuvector/neuvector/share/cluster"
 	"github.com/neuvector/neuvector/share/healthz"
+	"github.com/neuvector/neuvector/share/k8sutils"
 	log "github.com/sirupsen/logrus"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/informers"
@@ -25,7 +26,10 @@ import (
 	"k8s.io/client-go/tools/cache"
 )
 
-const WaitSyncTimeout = time.Minute * 5
+const (
+	WaitSyncTimeout                     = time.Minute * 5
+	INTERNAL_SECRET_ROTATION_ANNOTATION = "internal-cert-rotation"
+)
 
 type InternalSecretController struct {
 	informerFactory informers.SharedInformerFactory
@@ -34,6 +38,7 @@ type InternalSecretController struct {
 	secretName      string
 	lastRevision    string
 	reloadFuncs     []func([]byte, []byte, []byte) error
+	clientset       *kubernetes.Clientset
 	initialized     int32
 }
 
@@ -105,6 +110,19 @@ func ReloadCert(cacert []byte, cert []byte, key []byte) error {
 // 1. The initial add.  It might have certs filled depending on timing, but no guarantee.
 // 2. The following update.  This should have certs all the time.
 func (c *InternalSecretController) ReloadSecret(secret *v1.Secret) (bool, error) {
+	if secret.Annotations[INTERNAL_SECRET_ROTATION_ANNOTATION] == "" {
+		log.Info("internal certificate is not ready yet.")
+		return false, nil
+	}
+
+	if secret.Annotations[INTERNAL_SECRET_ROTATION_ANNOTATION] != "enabled" {
+		log.Info("internal certificate rotation is disabled. Use built-in certs.")
+		if c.initialized == 0 {
+			atomic.SwapInt32(&c.initialized, 1)
+		}
+		return true, nil
+	}
+
 	cacert := secret.Data[ACTIVE_SECRET_PREFIX+CACERT_FILENAME]
 	cert := secret.Data[ACTIVE_SECRET_PREFIX+CERT_FILENAME]
 	key := secret.Data[ACTIVE_SECRET_PREFIX+KEY_FILENAME]
@@ -122,11 +140,14 @@ func (c *InternalSecretController) ReloadSecret(secret *v1.Secret) (bool, error)
 		// If file is not found, the container may have just been initialized.
 	}
 
-	if reflect.DeepEqual(oldcacert, cacert) && reflect.DeepEqual(oldcert, cert) && reflect.DeepEqual(oldkey, key) {
-		// It's possible that controller restarts after cert is rolled out, so flip the flag in this case.
-		atomic.SwapInt32(&c.initialized, 1)
-		log.Debug("Internal certificate is not changed")
-		return false, nil
+	// If internal certificate exists, and it's the same as the certificate defined in the secret,
+	// it's possible that controller process restarts after cert is rolled out, so flip the flag in this case.
+	if oldcacert != nil && oldcert != nil && oldkey != nil {
+		if reflect.DeepEqual(oldcacert, cacert) && reflect.DeepEqual(oldcert, cert) && reflect.DeepEqual(oldkey, key) {
+			atomic.SwapInt32(&c.initialized, 1)
+			log.Debug("Internal certificate is not changed")
+			return false, nil
+		}
 	}
 
 	if err := ReloadCert(cacert, cert, key); err != nil {
@@ -140,6 +161,8 @@ func (c *InternalSecretController) ReloadSecret(secret *v1.Secret) (bool, error)
 		atomic.SwapInt32(&c.initialized, 1)
 		return true, nil
 	}
+
+	// If it was initialized before, reload the certificates.
 
 	recoverCerts := func() {
 		if err := ReloadCert(oldcacert, oldcert, oldkey); err != nil {
@@ -235,7 +258,8 @@ func (c *InternalSecretController) secretUpdate(old, new interface{}) {
 	// Note: There is no guarantee that oldSecret will be available, but for checking it's enough.
 	if reflect.DeepEqual(oldSecret.Data[ACTIVE_SECRET_PREFIX+CACERT_FILENAME], newSecret.Data[ACTIVE_SECRET_PREFIX+CACERT_FILENAME]) &&
 		reflect.DeepEqual(oldSecret.Data[ACTIVE_SECRET_PREFIX+CERT_FILENAME], newSecret.Data[ACTIVE_SECRET_PREFIX+CERT_FILENAME]) &&
-		reflect.DeepEqual(oldSecret.Data[ACTIVE_SECRET_PREFIX+KEY_FILENAME], newSecret.Data[ACTIVE_SECRET_PREFIX+KEY_FILENAME]) {
+		reflect.DeepEqual(oldSecret.Data[ACTIVE_SECRET_PREFIX+KEY_FILENAME], newSecret.Data[ACTIVE_SECRET_PREFIX+KEY_FILENAME]) &&
+		reflect.DeepEqual(oldSecret.Annotations, newSecret.Annotations) {
 
 		log.WithField("rev", newSecret.ResourceVersion).Debug("Internal certs has been applied before.")
 		healthz.UpdateStatus("cert.revision", newSecret.ResourceVersion)
@@ -297,24 +321,34 @@ func NewInternalSecretController(informerFactory informers.SharedInformerFactory
 	return c, nil
 }
 
-func InitializeInternalSecretController(ctx context.Context, reloadFuncs []func([]byte, []byte, []byte) error) error {
-	var err error
+func InitializeInternalSecretController(ctx context.Context, reloadFuncs []func([]byte, []byte, []byte) error) (capable bool, err error) {
 	var config *rest.Config
-	config, err = rest.InClusterConfig()
-	if err != nil {
-		return fmt.Errorf("failed to read in-cluster config: %w", err)
-	}
-
-	clientset, err := kubernetes.NewForConfig(config)
-	if err != nil {
-		return fmt.Errorf("failed to get k8s config: %w", err)
-	}
 
 	var namespace string
 	if data, err := os.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/namespace"); err == nil {
 		namespace = string(data)
 	} else {
 		log.WithError(err).Warn("failed to open namespace file.")
+	}
+
+	config, err = rest.InClusterConfig()
+	if err != nil {
+		return false, fmt.Errorf("failed to read in-cluster config: %w", err)
+	}
+
+	clientset, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		return false, fmt.Errorf("failed to get k8s config: %w", err)
+	}
+
+	for _, res := range k8sutils.SecretInformerRequiredPermissions {
+		capable, err := k8sutils.CanI(clientset, res, namespace)
+		if err != nil {
+			return false, err
+		}
+		if !capable {
+			return false, nil
+		}
 	}
 
 	// Allow overriding via POD_NAMESPACE variable for testing
@@ -326,16 +360,16 @@ func InitializeInternalSecretController(ctx context.Context, reloadFuncs []func(
 
 	controller, err := NewInternalSecretController(factory, namespace, "neuvector-internal-certs", reloadFuncs)
 	if err != nil {
-		return fmt.Errorf("failed to create internal secret controller: %w", err)
+		return false, fmt.Errorf("failed to create internal secret controller: %w", err)
 	}
 
 	// This function will wait until the secret is synced.
 	err = controller.Run(ctx.Done())
 	if err != nil {
-		return fmt.Errorf("failed to run internal secret controller: %w", err)
+		return false, fmt.Errorf("failed to run internal secret controller: %w", err)
 	}
 
 	log.Info("cache is synced and internal cert is ready")
 
-	return nil
+	return true, nil
 }

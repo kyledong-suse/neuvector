@@ -159,6 +159,8 @@ const (
 	EventNameScannerAutoScaleDisabled    = "Configuration.ScannerAutoScale.Disabled"
 	EventNameK8sAdmissionWebhookChange   = "Kubenetes.Admission.Webhook.Change" // for admission control
 	EventNameGroupMetricViolation        = "Group.Metric.Violation"
+	EventNameKvRestored                  = "Configuration.Restore"
+	EventNameScanDataRestored            = "Scan.Data.Restore"
 )
 
 // TODO: these are not events but incidents
@@ -385,8 +387,10 @@ type Audit struct {
 	Repository      string   `json:"repository,omitempty"`    // image
 	Tag             string   `json:"tag,omitempty"`           // image
 	BaseOS          string   `json:"base_os,omitempty"`
+	CriticalCnt     int      `json:"critical_vul_cnt"`
 	HighCnt         int      `json:"high_vul_cnt"`
 	MediumCnt       int      `json:"medium_vul_cnt"`
+	CriticalVuls    []string `json:"critical_vuls,omitempty"`
 	HighVuls        []string `json:"high_vuls,omitempty"`
 	MediumVuls      []string `json:"medium_vuls,omitempty"`
 	CVEDBVersion    string   `json:"cvedb_version,omitempty"`

@@ -101,16 +101,14 @@ func buildComplianceFilter(ccp *share.CLUSComplianceProfile) map[string][]string
 	}
 
 	// Add checks that are not in the override list
-	_, metaMap := scanUtils.GetComplianceMeta()
+	_, metaMap := scanUtils.GetComplianceMeta(scanUtils.V1)
+
 	for _, m := range metaMap {
 		if _, ok := filter[m.TestNum]; !ok {
 			var complianceTags []string
-			for _, complianceTagMap := range m.Tags {
-				for tag, _ := range complianceTagMap {
-					complianceTags = append(complianceTags, tag)
-				}
+			for _, compliance := range m.Tags {
+				complianceTags = append(complianceTags, compliance)
 			}
-
 			filter[m.TestNum] = complianceTags
 		}
 	}
@@ -201,11 +199,17 @@ type wlMini struct {
 	mode string
 }
 
+type podVuls struct {
+	CriticalVuls int
+	HighVuls int
+	MedVuls int
+}
+
 func (m CacheMethod) GetRiskScoreMetrics(acc, accCaller *access.AccessControl) *api.RESTInternalSystemData {
 	var s api.RESTRiskScoreMetrics
 
 	s.Platform, s.K8sVersion, s.OCVersion = m.GetPlatform()
-	s.NewServiceMode = getNewServicePolicyMode()
+	s.NewServiceMode, s.NewProfileMode = getNewServicePolicyMode()
 
 	// Check if count system container/group
 	var disableSystem bool
@@ -248,6 +252,38 @@ func (m CacheMethod) GetRiskScoreMetrics(acc, accCaller *access.AccessControl) *
 		s.Groups.Groups++
 	}
 
+	// Calculate pod vulnerabilities
+	podVulsMap := make(map[string]podVuls) // podName => podVuls
+	for _, cache := range wlCacheMap {
+		wl := cache.workload
+		if !acc.Authorize(wl, nil) {
+			continue
+		}
+		if common.OEMIgnoreWorkload(wl) {
+			continue
+		}
+		if cache.platformRole != "" && disableSystem {
+			// skip system containers
+			continue
+		}
+		if !wl.Running || cache.scanBrief == nil {
+			continue
+		}
+
+		// Calculate sum of vulnerabilities for containers in each pod
+		// Do not re-sum existing pod vulnerabilities
+		if wl.ShareNetNS != "" {
+			pv, ok := podVulsMap[cache.podName]
+			if !ok {
+				pv = podVuls{}
+			}
+			pv.CriticalVuls += cache.scanBrief.CriticalVuls
+			pv.HighVuls += cache.scanBrief.HighVuls
+			pv.MedVuls += cache.scanBrief.MedVuls
+			podVulsMap[cache.podName] = pv
+		}
+	}
+
 	// get all running pod
 	epMap := make(map[string]*wlMini) // id ==> plicy mode
 	for _, cache := range wlCacheMap {
@@ -275,8 +311,17 @@ func (m CacheMethod) GetRiskScoreMetrics(acc, accCaller *access.AccessControl) *
 			mode = gc.group.PolicyMode
 		}
 
+		// Assign containers' sum of vulnerabilities to pod cache
 		if wl.ShareNetNS == "" {
 			epMap[cache.workload.ID] = &wlMini{mode: mode}
+			if podVuls, ok := podVulsMap[cache.podName]; ok {
+				if cache.scanBrief == nil {
+					cache.scanBrief = &api.RESTScanBrief{}
+				}
+				cache.scanBrief.CriticalVuls = podVuls.CriticalVuls
+				cache.scanBrief.HighVuls = podVuls.HighVuls
+				cache.scanBrief.MedVuls = podVuls.MedVuls
+			}
 		} else {
 			// Only counts app containers, not pod
 			if wl.Privileged {
@@ -288,7 +333,7 @@ func (m CacheMethod) GetRiskScoreMetrics(acc, accCaller *access.AccessControl) *
 
 			// workload cve
 			if cache.scanBrief != nil {
-				cve := cache.scanBrief.HighVuls + cache.scanBrief.MedVuls
+				cve := cache.scanBrief.CVECount()
 				switch mode {
 				case share.PolicyModeLearn:
 					s.CVEs.DiscoverCVEs += cve
@@ -311,7 +356,7 @@ func (m CacheMethod) GetRiskScoreMetrics(acc, accCaller *access.AccessControl) *
 			continue
 		}
 		if cache.scanBrief != nil && scoreHost {
-			s.CVEs.HostCVEs += cache.scanBrief.HighVuls + cache.scanBrief.MedVuls
+			s.CVEs.HostCVEs += cache.scanBrief.CVECount()
 		}
 		s.Hosts++
 	}
@@ -324,7 +369,7 @@ func (m CacheMethod) GetRiskScoreMetrics(acc, accCaller *access.AccessControl) *
 	scanMutexRLock()
 	if acc.Authorize(&share.CLUSHost{}, nil) {
 		if info, ok := scanMap[common.ScanPlatformID]; ok && info.brief != nil {
-			s.CVEs.PlatformCVEs = info.brief.HighVuls + info.brief.MedVuls
+			s.CVEs.PlatformCVEs = info.brief.CVECount()
 		}
 	}
 	scanMutexRUnlock()
@@ -425,6 +470,7 @@ func (m CacheMethod) GetRiskScoreMetrics(acc, accCaller *access.AccessControl) *
 			}
 			r.PolicyMode, _ = getWorkloadPerGroupPolicyMode(cache)
 			if cache.scanBrief != nil {
+				r.CriticalVuls = cache.scanBrief.CriticalVuls
 				r.HighVuls = cache.scanBrief.HighVuls
 				r.MedVuls = cache.scanBrief.MedVuls
 			}
@@ -452,6 +498,7 @@ func (m CacheMethod) GetRiskScoreMetrics(acc, accCaller *access.AccessControl) *
 			}
 			r.PolicyMode, _ = getWorkloadPerGroupPolicyMode(cache)
 			if cache.scanBrief != nil {
+				r.CriticalVuls = cache.scanBrief.CriticalVuls
 				r.HighVuls = cache.scanBrief.HighVuls
 				r.MedVuls = cache.scanBrief.MedVuls
 			}

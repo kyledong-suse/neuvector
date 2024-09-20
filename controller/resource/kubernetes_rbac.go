@@ -126,7 +126,7 @@ var ocReaderVerbs utils.Set = utils.NewSet(
 // ns reader:   in {"read-only.neuvector.api.io", "*"}		"*"				in {"get"}  // clusterrole(with rolebinding) or role
 var nvReadVerbSSO utils.Set = utils.NewSet("get")                                                          // for view in SSO role/permissions mapping
 var nvWriteVerbSSO utils.Set = utils.NewSet("create", "delete", "get", "list", "patch", "update", "watch") // for modify in SSO role/permissions mapping
-var nvRscMapSSO map[string]utils.Set                                                                       // key is apiGroup, value is (nv-perm) resources
+var nvRscMapSSO map[string]utils.Set                                                                       // key is apiGroup, value is nv permission resources
 var nvPermitsValueSSO map[string]share.NvPermissions                                                       // for Rancher SSO
 
 var appRoleVerbs utils.Set = utils.NewSet("get", "list", "update", "watch")
@@ -140,10 +140,13 @@ var updaterSubjectWanted string = "updater"
 var enforcerSubjectWanted string = "enforcer"
 var scannerSubjectWanted string = "scanner"
 var regAdapterSubjectWanted string = "registry-adapter"
+var certUpgraderSubjectWanted string = "cert-upgrader"
 var ctrlerSubjectsWanted []string = []string{"controller"}
-var scannerSubjecstWanted []string = []string{"updater", "controller"}
-var secretSubjecstWanted []string = []string{"enforcer", "controller", "scanner", "registry-adapter"}
-var enforcerSubjecstWanted []string = []string{"enforcer", "controller"}
+var scannerSubjectsWanted []string = []string{"updater", "controller"}
+var secretSubjectsWanted []string = []string{"enforcer", "controller", "scanner", "registry-adapter"}
+var enforcerSubjectsWanted []string = []string{"enforcer", "controller"}
+var jobCreationSubjectsWanted []string = []string{"controller"}
+var certUpgraderSubjectsWanted []string = []string{"cert-upgrader"}
 
 var _k8sFlavor string // share.FlavorRancher or share.FlavorOpenShift
 
@@ -281,6 +284,48 @@ var rbacRolesWanted map[string]*k8sRbacRoleInfo = map[string]*k8sRbacRoleInfo{ /
 			},
 		},
 	},
+	NvJobCreationRole: &k8sRbacRoleInfo{
+		name:      NvJobCreationRole,
+		namespace: constNvNamespace,
+		rules: []*k8sRbacRoleRuleInfo{
+			&k8sRbacRoleRuleInfo{
+				apiGroup:  "batch",
+				resources: utils.NewSet(K8sResJobs),
+				verbs:     utils.NewSet("create", "get", "delete"),
+			},
+			&k8sRbacRoleRuleInfo{
+				apiGroup:  "batch",
+				resources: utils.NewSet(K8sResCronjobs, K8sResCronjobsFinalizer),
+				verbs:     utils.NewSet("update", "patch"),
+			},
+		},
+	},
+	NvCertUpgraderRole: &k8sRbacRoleInfo{
+		name:      NvCertUpgraderRole,
+		namespace: constNvNamespace,
+		rules: []*k8sRbacRoleRuleInfo{
+			&k8sRbacRoleRuleInfo{
+				apiGroup:  "",
+				resources: utils.NewSet(k8sResSecrets),
+				verbs:     utils.NewSet("get", "update", "watch", "list"),
+			},
+			&k8sRbacRoleRuleInfo{
+				apiGroup:  "",
+				resources: utils.NewSet(K8sResPods),
+				verbs:     utils.NewSet("get", "list"),
+			},
+			&k8sRbacRoleRuleInfo{
+				apiGroup:  "apps",
+				resources: utils.NewSet(K8sResDeployments, K8sResDaemonsets),
+				verbs:     utils.NewSet("get", "list", "watch"),
+			},
+			&k8sRbacRoleRuleInfo{
+				apiGroup:  "batch",
+				resources: utils.NewSet(K8sResCronjobs),
+				verbs:     utils.NewSet("update"),
+			},
+		},
+	},
 	k8sClusterRoleView: &k8sRbacRoleInfo{
 		k8sReserved:   true,
 		name:          k8sClusterRoleView,
@@ -342,17 +387,27 @@ var rbacRoleBindingsWanted map[string]*k8sRbacBindingInfo = map[string]*k8sRbacB
 	},
 	NvScannerRoleBinding: &k8sRbacBindingInfo{ // for updater pod
 		namespace: constNvNamespace,
-		subjects:  scannerSubjecstWanted,
+		subjects:  scannerSubjectsWanted,
 		rbacRole:  rbacRolesWanted[NvScannerRole],
 	},
 	nvSecretRoleBinding: &k8sRbacBindingInfo{
 		namespace: constNvNamespace,
-		subjects:  secretSubjecstWanted,
+		subjects:  secretSubjectsWanted,
 		rbacRole:  rbacRolesWanted[NvSecretRole],
+	},
+	NvJobCreationRoleBinding: &k8sRbacBindingInfo{
+		namespace: constNvNamespace,
+		subjects:  jobCreationSubjectsWanted,
+		rbacRole:  rbacRolesWanted[NvJobCreationRole],
+	},
+	NvCertUpgraderRoleBinding: &k8sRbacBindingInfo{
+		namespace: constNvNamespace,
+		subjects:  certUpgraderSubjectsWanted,
+		rbacRole:  rbacRolesWanted[NvCertUpgraderRole],
 	},
 	NvAdminRoleBinding: &k8sRbacBindingInfo{ // for updater pod (5.1.x-)
 		namespace: constNvNamespace,
-		subjects:  scannerSubjecstWanted,
+		subjects:  scannerSubjectsWanted,
 		rbacRole:  rbacRolesWanted[k8sClusterRoleAdmin],
 	},
 }
@@ -388,10 +443,10 @@ func adjustNvRolePermits(rbacRoleName, nvRole string, nvPermits share.NvPermissi
 	}
 
 	if nvRole != nvRoleIn {
-		log.WithFields(log.Fields{"k8sRole": rbacRoleName, "role_in": nvRoleIn, "role_adjusted": nvRole}).Debug()
+		log.WithFields(log.Fields{"k8sRole": rbacRoleName, "role_in": nvRoleIn, "role_adjusted": nvRole, "permits_in": nvPermitsIn}).Debug()
 	}
 	if nvPermits != nvPermitsIn {
-		log.WithFields(log.Fields{"k8sRole": rbacRoleName, "permits_in": nvPermitsIn, "permits_adjusted": nvPermits}).Debug()
+		log.WithFields(log.Fields{"k8sRole": rbacRoleName, "role_in": nvRoleIn, "permits_in": nvPermitsIn, "permits_adjusted": nvPermits}).Debug()
 	}
 
 	return nvRole, nvPermits
@@ -411,15 +466,17 @@ func k8s2NVRolePermits(k8sFlavor, rbacRoleName string, rscs, readVerbs, writeVer
 	if k8sFlavor == share.FlavorRancher {
 		var nvRole string
 		for rsc, verbs := range r2v {
-			// resource "nv-perm.all-permissions" is equivalent to "*"
-			if rsc == "*" || rsc == "nv-perm.all-permissions" {
+			// resource "nv-perm.all-permissions"/"cluster"/"namespace" are equivalent to "*"
+			if rsc == "*" || rsc == "nv-perm.all-permissions" || rsc == "cluster" || rsc == "namespace" {
 				if verbs.Contains("*") || writeVerbs.Intersect(verbs).Cardinality() == writeVerbs.Cardinality() {
 					nvRole = api.UserRoleAdmin
 				} else if readVerbs.Intersect(verbs).Cardinality() != 0 && nvRole == api.UserRoleNone {
 					nvRole = api.UserRoleReader
 				}
-			} else if strings.HasPrefix(rsc, nvPermRscPrefix) {
-				rsc = rsc[len(nvPermRscPrefix):]
+			} else {
+				if strings.HasPrefix(rsc, nvPermRscPrefix) {
+					rsc = rsc[len(nvPermRscPrefix):]
+				}
 				if v, ok := nvPermitsValueSSO[rsc]; ok {
 					if verbs.Contains("*") || writeVerbs.Intersect(verbs).Cardinality() == writeVerbs.Cardinality() {
 						nvPermits.Union(v)
@@ -431,19 +488,21 @@ func k8s2NVRolePermits(k8sFlavor, rbacRoleName string, rscs, readVerbs, writeVer
 		}
 		// Now nvRole & nvPermits could be non-empty value
 
+		// "nv-perm.all-permissions" is equivalent to "cluster"/"namespace"
+		// "nv-perm.fed" is equivalent to "federation"
 		// When SSO happens on NV master cluster,
-		// 1. * verb on  * or nv-perm.all-permissions 								resource in Rancher Global  Role maps to fedAdmin
-		// 2. * verb on  "*, nv-perm.fed" or "nv-perm.all-permissions, nv-perm.fed" resource in Rancher Cluster Role maps to fedAdmin
-		// 3. * verb on  * or nv-perm.all-permissions 								resource in Rancher Cluster Role maps to admin
-		// 4. * verb on  * or nv-perm.all-permissions								resource in Rancher Project Role maps to admin (namespace)
+		// 1. * verb on  * or cluster 							  resource in Rancher Global  Role maps to fedAdmin
+		// 2. * verb on  "*, federation" or "cluster, federation" resource in Rancher Cluster Role maps to fedAdmin
+		// 3. * verb on  * or cluster 							  resource in Rancher Cluster Role maps to admin
+		// 4. * verb on  * or cluster or namespace  	          resource in Rancher Project Role maps to admin (namespace)
 		// When SSO happens on NV non-master cluster,
-		// 1. * verb on  * or nv-perm.all-permissions	resource in Rancher Cluster Role maps to admin
-		// 2. * verb on  * or nv-perm.all-permissions	resource in Rancher Project Role maps to namespace admin
-		// 3. nv-perm.fed resource is ignored
+		// 1. * verb on  * or cluster	                          resource in Rancher Cluster Role maps to admin
+		// 2. * verb on  * or cluster or namespace                resource in Rancher Project Role maps to namespace admin
+		// 3. federation resource is ignored
 		// Rancher's Global/Cluster/Project Roles are represented by k8s clusterrole.
 		// Unlike for Global Role, from k8s clusterrole name we we cannot tell it's for Rancher Cluster Role or Project Role.
-		// Rancher Cluster Role supports nv-perm.fed resource but Rancher Project Role doesn't(yet)
-		// So we treat every non-GlobalRole k8s clusterrole the same in this function (i.e. nv-perm.fed resource is not ignored in this function).
+		// Rancher Cluster Role supports federation resource but Rancher Project Role doesn't(yet)
+		// So we treat every non-GlobalRole k8s clusterrole the same in this function (i.e. federation resource is not ignored in this function).
 		// The actual user role/permission will be adjusted in rbacEvaluateUser() by leveraging k8s (cluster)rolebinding to know it's Project/Nameapce Role or not
 		if strings.HasPrefix(rbacRoleName, globalRolePrefix) {
 			if nvRole == api.UserRoleAdmin {
@@ -1878,36 +1937,33 @@ func GetSaFromJwtToken(tokenStr string) (string, error) {
 
 func GetNvCtrlerServiceAccount(objFunc common.CacheEventFunc) {
 	cacheEventFunc = objFunc
-	nvControllerSA := ctrlerSubjectWanted
+	// controller pod runs as "controller" sa if it's deployed with least privilge enabled
 	filePath := "/var/run/secrets/kubernetes.io/serviceaccount/token"
 	if data, err := os.ReadFile(filePath); err == nil {
 		if sa, err := GetSaFromJwtToken(string(data)); err == nil {
-			nvControllerSA = sa
+			ctrlerSubjectWanted = sa
+			ctrlerSubjectsWanted[0] = ctrlerSubjectWanted
+			jobCreationSubjectsWanted[0] = ctrlerSubjectWanted
 		}
 	} else {
 		log.WithFields(log.Fields{"filePath": filePath, "error": err}).Error()
 	}
-	if nvControllerSA != ctrlerSubjectWanted {
-		ctrlerSubjectWanted = nvControllerSA
-		ctrlerSubjectsWanted[0] = ctrlerSubjectWanted
-		scannerSubjecstWanted[0] = ctrlerSubjectWanted
-		scannerSubjecstWanted[1] = updaterSubjectWanted
-		enforcerSubjecstWanted[0] = ctrlerSubjectWanted
-		enforcerSubjecstWanted[1] = enforcerSubjectWanted
-		secretSubjecstWanted[0] = ctrlerSubjectWanted
-		secretSubjecstWanted[1] = enforcerSubjectWanted
-		secretSubjecstWanted[2] = scannerSubjectWanted
-		secretSubjecstWanted[3] = regAdapterSubjectWanted
-	}
+
+	getNeuvectorSvcAccount()
+
 	log.WithFields(log.Fields{"nvControllerSA": ctrlerSubjectWanted}).Info()
 
 	return
 }
 
 func getSubjectsString(ns string, subjects []string) string {
-	fullSubjects := make([]string, len(subjects))
-	for i, s := range subjects {
-		fullSubjects[i] = fmt.Sprintf("%s:%s", ns, s)
+	subjectSet := utils.NewSet()
+	fullSubjects := make([]string, 0, len(subjects))
+	for _, s := range subjects {
+		if s != "" && !subjectSet.Contains(s) {
+			fullSubjects = append(fullSubjects, fmt.Sprintf("%s:%s", ns, s))
+			subjectSet.Add(s)
+		}
 	}
 	return strings.Join(fullSubjects, ", ")
 }
@@ -1926,11 +1982,7 @@ func VerifyNvK8sRBAC(flavor, csp string, existOnly bool) ([]string, []string, []
 	roleErrors := emptySlice
 	roleBindingErrors := emptySlice
 
-	resInfo := map[string]string{ // resource object name : resource type
-		"neuvector-updater-pod":  RscTypeCronJob,
-		"neuvector-enforcer-pod": RscTypeDaemonSet,
-	}
-	getNeuvectorSvcAccount(resInfo)
+	getNeuvectorSvcAccount()
 
 	// check neuvector-updater-pod cronjob exists in k8s or not. if it exists, check rolebinding neuvector-binding-scanner / neuvector-admin
 	// rolebinding neuvector-binding-scanner is preferred in 5.2(+)

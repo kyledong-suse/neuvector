@@ -195,6 +195,7 @@ type Context struct {
 	RestConfigFunc           func(cmd, interval uint32, param1 interface{}, param2 interface{}) error
 	CreateQuerySessionFunc   func(qsr *api.QuerySessionRequest) error
 	DeleteQuerySessionFunc   func(queryToken string) error
+	NotifyCertChange         func(cn string) error
 }
 
 type k8sProbeCmd struct {
@@ -1028,7 +1029,8 @@ func (m CacheMethod) GetControllerConfig(id string, acc *access.AccessControl) (
 		}
 
 		return &api.RESTControllerConfig{
-			Debug: &cache.config.Debug,
+			Debug:    &cache.config.Debug,
+			LogLevel: &cache.config.LogLevel,
 		}, nil
 	}
 	return nil, common.ErrObjectNotFound
@@ -1089,7 +1091,8 @@ func (m CacheMethod) GetAgentConfig(id string, acc *access.AccessControl) (*api.
 		}
 
 		return &api.RESTAgentConfig{
-			Debug: &cache.config.Debug,
+			Debug:    &cache.config.Debug,
+			LogLevel: &cache.config.LogLevel,
 		}, nil
 	}
 	return nil, common.ErrObjectNotFound
@@ -1205,7 +1208,7 @@ func (m CacheMethod) GetAllAgents(acc *access.AccessControl) []*api.RESTAgent {
 	return agents
 }
 
-func (m CacheMethod) GetAllWorkloads(view string, acc *access.AccessControl) []*api.RESTWorkload {
+func (m CacheMethod) GetAllWorkloads(view string, acc *access.AccessControl, idlist utils.Set) []*api.RESTWorkload {
 	cacheMutexRLock()
 	defer cacheMutexRUnlock()
 
@@ -1219,6 +1222,12 @@ func (m CacheMethod) GetAllWorkloads(view string, acc *access.AccessControl) []*
 			}
 			if common.OEMIgnoreWorkload(cache.workload) {
 				continue
+			}
+
+			if idlist.Cardinality() > 0 {
+				if idlist.Contains(cache.workload.ID) == false {
+					continue
+				}
 			}
 
 			if cache.workload.ShareNetNS == "" {

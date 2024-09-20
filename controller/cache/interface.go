@@ -42,7 +42,7 @@ type CacheInterface interface {
 	GetAgentbyWorkload(wlID string, acc *access.AccessControl) (string, error)
 	GetAgentsbyHost(hostID string, acc *access.AccessControl) ([]string, error)
 
-	GetAllWorkloads(view string, acc *access.AccessControl) []*api.RESTWorkload
+	GetAllWorkloads(view string, acc *access.AccessControl, idlist utils.Set) []*api.RESTWorkload
 	GetAllWorkloadsBrief(view string, acc *access.AccessControl) []*api.RESTWorkloadBrief
 	GetAllWorkloadsDetail(view string, acc *access.AccessControl) []*api.RESTWorkloadDetail
 	GetWorkloadCount(acc *access.AccessControl) (int, int, int)
@@ -218,7 +218,7 @@ type CacheInterface interface {
 	DoesDlpSensorExist(name string, acc *access.AccessControl) (bool, error)
 	GetDlpRuleNames() *[]string
 	GetDlpRuleSensorGroupById(id uint32) (string, string, *[]string)
-	GetNewServicePolicyMode() string
+	GetNewServicePolicyMode() (string, string)
 	GetNewServiceProfileBaseline() string
 	GetUnusedGroupAging() uint8
 	GetNetServiceStatus() bool

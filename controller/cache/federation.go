@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	log "github.com/sirupsen/logrus"
 
@@ -350,12 +351,14 @@ func (m CacheMethod) GetFedMember(statusMap map[int]string, acc *access.AccessCo
 	case api.FedRoleMaster:
 		s.MasterCluster.Name = m.GetSystemConfigClusterName(acc)
 		s.MasterCluster.Status = statusMap[0] // _fedSuccess meaning active
+		s.MasterCluster.RestVersion = kv.GetRestVer()
 		s.JointClusters = make([]*api.RESTFedJointClusterInfo, 0, len(fedJoinedClustersCache))
 		for _, c := range fedJoinedClustersCache {
 			jointCluster := &api.RESTFedJointClusterInfo{
 				Name:          c.cluster.Name,
 				ID:            c.cluster.ID,
 				RestInfo:      c.cluster.RestInfo,
+				RestVersion:   c.cluster.RestVersion,
 				ProxyRequired: c.cluster.ProxyRequired,
 			}
 			if cache, ok := fedJoinedClusterStatusCache[c.cluster.ID]; ok && cache.Status > 0 {
@@ -469,7 +472,7 @@ func (m CacheMethod) GetFedJoinedClusterNameList(acc *access.AccessControl) []st
 	fedCacheMutexRLock()
 	defer fedCacheMutexRUnlock()
 
-	if acc.Authorize(&fedMembershipCache, nil) {
+	if acc.Authorize(&fedMembershipCache, nil) || acc.HasPermFed() {
 		list := make([]string, 0, len(fedJoinedClustersCache))
 		for _, c := range fedJoinedClustersCache {
 			list = append(list, c.cluster.Name)
@@ -495,7 +498,7 @@ func (m CacheMethod) GetFedJoinedClusterStatus(id string, acc *access.AccessCont
 	fedCacheMutexRLock()
 	defer fedCacheMutexRUnlock()
 
-	if acc.Authorize(&fedMembershipCache, nil) {
+	if acc.Authorize(&fedMembershipCache, nil) || acc.HasPermFed() {
 		if s, ok := fedJoinedClusterStatusCache[id]; ok {
 			return s
 		}
@@ -836,6 +839,12 @@ func (m CacheMethod) GetFedScanDataRevisions(getRegScanData, getRepoScanData boo
 	}
 	if getRepoScanData {
 		scanDataRevs.ScannedRepoRev = fedScanDataRevsCache.ScannedRepoRev
+	}
+
+	if fedScanDataRevsCache.Restoring {
+		if elapsed := time.Since(fedScanDataRevsCache.RestoreAt); elapsed > time.Duration(5)*time.Minute {
+			fedScanDataRevsCache.Restoring = false
+		}
 	}
 
 	return scanDataRevs, fedScanDataRevsCache.Restoring

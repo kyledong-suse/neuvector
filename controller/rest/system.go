@@ -21,6 +21,7 @@ import (
 	"net/textproto"
 	"net/url"
 	"os"
+	"path"
 	"sort"
 	"strconv"
 	"strings"
@@ -230,7 +231,14 @@ func handlerSystemGetConfigBase(apiVer string, w http.ResponseWriter, r *http.Re
 		if fedRole := cacher.GetFedMembershipRoleNoAuth(); fedRole == api.FedRoleMaster || fedRole == api.FedRoleJoint {
 			if cconf := cacher.GetFedSystemConfig(acc); cconf == nil {
 				if scope == share.ScopeFed {
-					restRespAccessDenied(w, login)
+					if login.hasFedPermission() {
+						resp := api.RESTSystemConfigData{
+							FedConfig: &api.RESTFedSystemConfig{},
+						}
+						restRespSuccess(w, r, &resp, acc, login, nil, "")
+					} else {
+						restRespAccessDenied(w, login)
+					}
 					return
 				}
 			} else {
@@ -293,6 +301,7 @@ func handlerSystemGetConfigBase(apiVer string, w http.ResponseWriter, r *http.Re
 				Config: &api.RESTSystemConfigV2{
 					NewSvc: api.RESTSystemConfigNewSvcV2{
 						NewServicePolicyMode:      rconf.NewServicePolicyMode,
+						NewServiceProfileMode:      rconf.NewServiceProfileMode,
 						NewServiceProfileBaseline: rconf.NewServiceProfileBaseline,
 					},
 					Syslog: api.RESTSystemConfigSyslogV2{
@@ -330,6 +339,16 @@ func handlerSystemGetConfigBase(apiVer string, w http.ResponseWriter, r *http.Re
 						RegistryHttpsProxyEnable: rconf.RegistryHttpsProxyEnable,
 						RegistryHttpProxy:        rconf.RegistryHttpProxy,
 						RegistryHttpsProxy:       rconf.RegistryHttpsProxy,
+						RegistryHttpProxyCfg: api.RESTProxyConfig{
+							URL:      &rconf.RegistryHttpProxy.URL,
+							Username: &rconf.RegistryHttpProxy.Username,
+							Password: &rconf.RegistryHttpProxy.Password,
+						},
+						RegistryHttpsProxyCfg: api.RESTProxyConfig{
+							URL:      &rconf.RegistryHttpsProxy.URL,
+							Username: &rconf.RegistryHttpsProxy.Username,
+							Password: &rconf.RegistryHttpsProxy.Password,
+						},
 					},
 					IBMSA: api.RESTSystemConfigIBMSAV2{
 						IBMSAEpEnabled:      rconf.IBMSAEpEnabled,
@@ -350,6 +369,10 @@ func handlerSystemGetConfigBase(apiVer string, w http.ResponseWriter, r *http.Re
 						ModeAutoM2PDuration: rconf.ModeAutoM2PDuration,
 					},
 					ScannerAutoscale: rconf.ScannerAutoscale,
+					TlsCfg: api.RESTSystemConfigTls{
+						EnableTLSVerification: rconf.EnableTLSVerification,
+						GlobalCaCerts:         rconf.GlobalCaCerts,
+					},
 				},
 			}
 			if respV2.Config.ModeAuto.ModeAutoD2MDuration == 0 {
@@ -405,6 +428,12 @@ func handlerSystemRequest(w http.ResponseWriter, r *http.Request, ps httprouter.
 		restRespError(w, http.StatusBadRequest, api.RESTErrLicenseFail)
 		return
 	}
+	if rc.ProfileMode != nil && *rc.ProfileMode == share.PolicyModeEnforce &&
+		licenseAllowEnforce() == false {
+		restRespError(w, http.StatusBadRequest, api.RESTErrLicenseFail)
+		return
+	}
+	policy_mode := ""
 	if rc.PolicyMode != nil {
 		switch *rc.PolicyMode {
 		case share.PolicyModeLearn, share.PolicyModeEvaluate, share.PolicyModeEnforce:
@@ -414,11 +443,24 @@ func handlerSystemRequest(w http.ResponseWriter, r *http.Request, ps httprouter.
 			restRespErrorMessage(w, http.StatusBadRequest, api.RESTErrInvalidRequest, e)
 			return
 		}
-		if err := setServicePolicyModeAll(*rc.PolicyMode, acc); err != nil {
-			log.WithFields(log.Fields{"error": err}).Error("Fail to set policy mode")
-			restRespError(w, http.StatusInternalServerError, api.RESTErrFailWriteCluster)
+		policy_mode = *rc.PolicyMode
+	}
+	profile_mode := ""
+	if rc.ProfileMode != nil {
+		switch *rc.ProfileMode {
+		case share.PolicyModeLearn, share.PolicyModeEvaluate, share.PolicyModeEnforce:
+		default:
+			e := "Invalid profile mode"
+			log.WithFields(log.Fields{"profile_mode": *rc.ProfileMode}).Error(e)
+			restRespErrorMessage(w, http.StatusBadRequest, api.RESTErrInvalidRequest, e)
 			return
 		}
+		profile_mode = *rc.ProfileMode
+	}
+	if err := setServicePolicyModeAll(policy_mode, profile_mode, acc); err != nil {
+		log.WithFields(log.Fields{"error": err}).Error("Fail to set policy and  profile mode")
+		restRespError(w, http.StatusInternalServerError, api.RESTErrFailWriteCluster)
+		return
 	}
 
 	if rc.BaselineProfile != nil {
@@ -976,6 +1018,26 @@ func handlerSystemWebhookDelete(w http.ResponseWriter, r *http.Request, ps httpr
 	restRespSuccess(w, r, nil, acc, login, nil, "Delete system webhook")
 }
 
+func verifyCACerts(pemCerts []byte) error {
+	for len(pemCerts) > 0 {
+		var block *pem.Block
+		block, pemCerts = pem.Decode(pemCerts)
+		if block == nil {
+			break
+		}
+		if block.Type != "CERTIFICATE" || len(block.Headers) != 0 {
+			continue
+		}
+
+		certBytes := block.Bytes
+		_, err := x509.ParseCertificate(certBytes)
+		if err != nil {
+			return fmt.Errorf("failed to parse certificate: %w", err)
+		}
+	}
+	return nil
+}
+
 func configSystemConfig(w http.ResponseWriter, acc *access.AccessControl, login *loginSession, caller, scope, platform string,
 	rconf *api.RESTSystemConfigConfigData) (bool, error) {
 
@@ -1125,6 +1187,18 @@ func configSystemConfig(w http.ResponseWriter, acc *access.AccessControl, login 
 				default:
 					e := "Invalid new service policy mode"
 					log.WithFields(log.Fields{"new_service_policy_mode": *rc.NewServicePolicyMode}).Error(e)
+					restRespErrorMessage(w, http.StatusBadRequest, api.RESTErrInvalidRequest, e)
+					return kick, errors.New(e)
+				}
+			}
+			// New profile mode
+			if rc.NewServiceProfileMode != nil {
+				switch *rc.NewServiceProfileMode {
+				case share.PolicyModeLearn, share.PolicyModeEvaluate, share.PolicyModeEnforce:
+					cconf.NewServiceProfileMode = *rc.NewServiceProfileMode
+				default:
+					e := "Invalid new service profile mode"
+					log.WithFields(log.Fields{"new_service_profile_mode": *rc.NewServiceProfileMode}).Error(e)
 					restRespErrorMessage(w, http.StatusBadRequest, api.RESTErrInvalidRequest, e)
 					return kick, errors.New(e)
 				}
@@ -1391,31 +1465,75 @@ func configSystemConfig(w http.ResponseWriter, acc *access.AccessControl, login 
 				cconf.XffEnabled = *rc.XffEnabled
 			}
 
-			// registry proxy
-			if rc.RegistryHttpProxy != nil {
-				if rc.RegistryHttpProxy.URL != "" {
-					if _, err := url.ParseRequestURI(rc.RegistryHttpProxy.URL); err != nil {
-						log.WithFields(log.Fields{"error": err}).Error("Invalid HTTP proxy setting")
-						restRespErrorMessage(w, http.StatusBadRequest, api.RESTErrInvalidRequest, "Invalid HTTP proxy setting")
-						return kick, err
+			// registry proxy.  RegistryHttpProxyCfg will take precedence.
+			if rc.RegistryHttpProxyCfg != nil {
+				if rc.RegistryHttpProxyCfg.URL != nil {
+					if *rc.RegistryHttpProxyCfg.URL != "" {
+						if _, err := url.ParseRequestURI(*rc.RegistryHttpProxyCfg.URL); err != nil {
+							log.WithFields(log.Fields{"error": err}).Error("Invalid HTTP proxy setting")
+							restRespErrorMessage(w, http.StatusBadRequest, api.RESTErrInvalidRequest, "Invalid HTTP proxy setting")
+							return kick, err
+						}
 					}
+					cconf.RegistryHttpProxy.URL = *rc.RegistryHttpProxyCfg.URL
 				}
-				cconf.RegistryHttpProxy.URL = rc.RegistryHttpProxy.URL
-				cconf.RegistryHttpProxy.Username = rc.RegistryHttpProxy.Username
-				cconf.RegistryHttpProxy.Password = rc.RegistryHttpProxy.Password
-			}
-			if rc.RegistryHttpsProxy != nil {
-				if rc.RegistryHttpsProxy.URL != "" {
-					if _, err := url.ParseRequestURI(rc.RegistryHttpsProxy.URL); err != nil {
-						log.WithFields(log.Fields{"error": err}).Error("Invalid HTTPS proxy setting")
-						restRespErrorMessage(w, http.StatusBadRequest, api.RESTErrInvalidRequest, "Invalid HTTPS proxy setting")
-						return kick, err
+
+				if rc.RegistryHttpProxyCfg.Username != nil {
+					cconf.RegistryHttpProxy.Username = *rc.RegistryHttpProxyCfg.Username
+				}
+
+				if rc.RegistryHttpProxyCfg.Password != nil {
+					cconf.RegistryHttpProxy.Password = *rc.RegistryHttpProxyCfg.Password
+				}
+			} else {
+				if rc.RegistryHttpProxy != nil {
+					if rc.RegistryHttpProxy.URL != "" {
+						if _, err := url.ParseRequestURI(rc.RegistryHttpProxy.URL); err != nil {
+							log.WithFields(log.Fields{"error": err}).Error("Invalid HTTP proxy setting")
+							restRespErrorMessage(w, http.StatusBadRequest, api.RESTErrInvalidRequest, "Invalid HTTP proxy setting")
+							return kick, err
+						}
 					}
+					cconf.RegistryHttpProxy.URL = rc.RegistryHttpProxy.URL
+					cconf.RegistryHttpProxy.Username = rc.RegistryHttpProxy.Username
+					cconf.RegistryHttpProxy.Password = rc.RegistryHttpProxy.Password
 				}
-				cconf.RegistryHttpsProxy.URL = rc.RegistryHttpsProxy.URL
-				cconf.RegistryHttpsProxy.Username = rc.RegistryHttpsProxy.Username
-				cconf.RegistryHttpsProxy.Password = rc.RegistryHttpsProxy.Password
 			}
+
+			if rc.RegistryHttpsProxyCfg != nil {
+				if rc.RegistryHttpsProxyCfg.URL != nil {
+					if *rc.RegistryHttpsProxyCfg.URL != "" {
+						if _, err := url.ParseRequestURI(*rc.RegistryHttpsProxyCfg.URL); err != nil {
+							log.WithFields(log.Fields{"error": err}).Error("Invalid HTTP proxy setting")
+							restRespErrorMessage(w, http.StatusBadRequest, api.RESTErrInvalidRequest, "Invalid HTTP proxy setting")
+							return kick, err
+						}
+					}
+					cconf.RegistryHttpsProxy.URL = *rc.RegistryHttpsProxyCfg.URL
+				}
+
+				if rc.RegistryHttpsProxyCfg.Username != nil {
+					cconf.RegistryHttpsProxy.Username = *rc.RegistryHttpsProxyCfg.Username
+				}
+
+				if rc.RegistryHttpsProxyCfg.Password != nil {
+					cconf.RegistryHttpsProxy.Password = *rc.RegistryHttpsProxyCfg.Password
+				}
+			} else {
+				if rc.RegistryHttpsProxy != nil {
+					if rc.RegistryHttpsProxy.URL != "" {
+						if _, err := url.ParseRequestURI(rc.RegistryHttpsProxy.URL); err != nil {
+							log.WithFields(log.Fields{"error": err}).Error("Invalid HTTPS proxy setting")
+							restRespErrorMessage(w, http.StatusBadRequest, api.RESTErrInvalidRequest, "Invalid HTTPS proxy setting")
+							return kick, err
+						}
+					}
+					cconf.RegistryHttpsProxy.URL = rc.RegistryHttpsProxy.URL
+					cconf.RegistryHttpsProxy.Username = rc.RegistryHttpsProxy.Username
+					cconf.RegistryHttpsProxy.Password = rc.RegistryHttpsProxy.Password
+				}
+			}
+
 			if rc.RegistryHttpProxyEnable != nil {
 				cconf.RegistryHttpProxy.Enable = *rc.RegistryHttpProxyEnable
 			}
@@ -1518,6 +1636,20 @@ func configSystemConfig(w http.ResponseWriter, acc *access.AccessControl, login 
 			if rc.NoTelemetryReport != nil {
 				cconf.NoTelemetryReport = *rc.NoTelemetryReport
 			}
+
+			if rc.EnableTLSVerification != nil {
+				cconf.EnableTLSVerification = *rc.EnableTLSVerification
+			}
+
+			if rc.GlobalCaCerts != nil {
+				for _, cacert := range *rc.GlobalCaCerts {
+					if err := verifyCACerts([]byte(cacert)); err != nil {
+						restRespErrorMessage(w, http.StatusBadRequest, api.RESTErrInvalidRequest, err.Error())
+						return kick, err
+					}
+				}
+				cconf.GlobalCaCerts = *rc.GlobalCaCerts
+			}
 		} else if scope == share.ScopeFed && rconf.FedConfig != nil {
 			// webhook for fed system config
 			if rconf.FedConfig.Webhooks != nil {
@@ -1579,6 +1711,7 @@ func handlerSystemConfigBase(apiVer string, w http.ResponseWriter, r *http.Reque
 			configV2 := rconf.ConfigV2
 			if configV2.SvcCfg != nil {
 				config.NewServicePolicyMode = configV2.SvcCfg.NewServicePolicyMode
+				config.NewServiceProfileMode = configV2.SvcCfg.NewServiceProfileMode
 				config.NewServiceProfileBaseline = configV2.SvcCfg.NewServiceProfileBaseline
 			}
 			if configV2.SyslogCfg != nil {
@@ -1604,6 +1737,8 @@ func handlerSystemConfigBase(apiVer string, w http.ResponseWriter, r *http.Reque
 				config.RegistryHttpsProxyEnable = configV2.ProxyCfg.RegistryHttpsProxyEnable
 				config.RegistryHttpProxy = configV2.ProxyCfg.RegistryHttpProxy
 				config.RegistryHttpsProxy = configV2.ProxyCfg.RegistryHttpsProxy
+				config.RegistryHttpProxyCfg = configV2.ProxyCfg.RegistryHttpProxyCfg
+				config.RegistryHttpsProxyCfg = configV2.ProxyCfg.RegistryHttpsProxyCfg
 			}
 			if configV2.Webhooks != nil {
 				config.Webhooks = configV2.Webhooks
@@ -1623,6 +1758,12 @@ func handlerSystemConfigBase(apiVer string, w http.ResponseWriter, r *http.Reque
 				config.XffEnabled = configV2.MiscCfg.XffEnabled
 				config.NoTelemetryReport = configV2.MiscCfg.NoTelemetryReport
 			}
+
+			if configV2.TlsCfg != nil {
+				config.EnableTLSVerification = configV2.TlsCfg.EnableTLSVerification
+				config.GlobalCaCerts = configV2.TlsCfg.GlobalCaCerts
+			}
+
 			config.ScannerAutoscale = configV2.ScannerAutoscale
 			rconf.Config = config
 		} else {
@@ -1931,19 +2072,36 @@ func handlerMeterList(w http.ResponseWriter, r *http.Request, ps httprouter.Para
 	log.WithFields(log.Fields{"entries": len(resp.Meters)}).Debug()
 	restRespSuccess(w, r, &resp, acc, login, nil, "Get meter list")
 }
-
-func handlerSystemGetRBAC(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
-	log.WithFields(log.Fields{"URL": r.URL.String()}).Debug()
-	defer r.Body.Close()
-
-	acc, login := getAccessControl(w, r, "")
-	if acc == nil {
-		return
+func getNvUpgradeInfo() *api.RESTCheckUpgradeInfo {
+	var nvUpgradeInfo share.CLUSCheckUpgradeInfo
+	if value, _ := cluster.Get(share.CLUSTelemetryStore + "controller"); value != nil {
+		json.Unmarshal(value, &nvUpgradeInfo)
 	}
 
-	var resp api.RESTK8sNvRbacStatus = api.RESTK8sNvRbacStatus{
-		NvUpgradeInfo: &api.RESTCheckUpgradeInfo{},
+	empty := share.CLUSCheckUpgradeVersion{}
+	upgradeInfo := &api.RESTCheckUpgradeInfo{}
+	if nvUpgradeInfo.MinUpgradeVersion != empty {
+		upgradeInfo.MinUpgradeVersion = &api.RESTUpgradeInfo{
+			Version:     nvUpgradeInfo.MinUpgradeVersion.Version,
+			ReleaseDate: nvUpgradeInfo.MinUpgradeVersion.ReleaseDate,
+			Tag:         nvUpgradeInfo.MinUpgradeVersion.Tag,
+		}
 	}
+	if nvUpgradeInfo.MaxUpgradeVersion != empty {
+		upgradeInfo.MaxUpgradeVersion = &api.RESTUpgradeInfo{
+			Version:     nvUpgradeInfo.MaxUpgradeVersion.Version,
+			ReleaseDate: nvUpgradeInfo.MaxUpgradeVersion.ReleaseDate,
+			Tag:         nvUpgradeInfo.MaxUpgradeVersion.Tag,
+		}
+	}
+	if nvUpgradeInfo.MinUpgradeVersion == empty && nvUpgradeInfo.MaxUpgradeVersion == empty {
+		return nil
+	}
+
+	return upgradeInfo
+}
+
+func getAcceptableAlerts(acc *access.AccessControl, login *loginSession) ([]string, []string, []string, []string, []string, map[string]string, utils.Set) {
 	var clusterRoleErrors, clusterRoleBindingErrors, roleErrors, roleBindingErrors, nvCrdSchemaErrors []string
 	if k8sPlatform {
 		clusterRoleErrors, clusterRoleBindingErrors, roleErrors, roleBindingErrors =
@@ -1957,30 +2115,6 @@ func handlerSystemGetRBAC(w http.ResponseWriter, r *http.Request, ps httprouter.
 		}
 	}
 
-	var nvUpgradeInfo share.CLUSCheckUpgradeInfo
-	if value, _ := cluster.Get(share.CLUSTelemetryStore + "controller"); value != nil {
-		json.Unmarshal(value, &nvUpgradeInfo)
-	}
-
-	empty := share.CLUSCheckUpgradeVersion{}
-	if nvUpgradeInfo.MinUpgradeVersion != empty {
-		resp.NvUpgradeInfo.MinUpgradeVersion = &api.RESTUpgradeInfo{
-			Version:     nvUpgradeInfo.MinUpgradeVersion.Version,
-			ReleaseDate: nvUpgradeInfo.MinUpgradeVersion.ReleaseDate,
-			Tag:         nvUpgradeInfo.MinUpgradeVersion.Tag,
-		}
-	}
-	if nvUpgradeInfo.MaxUpgradeVersion != empty {
-		resp.NvUpgradeInfo.MaxUpgradeVersion = &api.RESTUpgradeInfo{
-			Version:     nvUpgradeInfo.MaxUpgradeVersion.Version,
-			ReleaseDate: nvUpgradeInfo.MaxUpgradeVersion.ReleaseDate,
-			Tag:         nvUpgradeInfo.MaxUpgradeVersion.Tag,
-		}
-	}
-	if nvUpgradeInfo.MinUpgradeVersion == empty && nvUpgradeInfo.MaxUpgradeVersion == empty {
-		resp.NvUpgradeInfo = nil
-	}
-
 	var accepted []string
 	if user, _, _ := clusHelper.GetUserRev(common.ReservedNvSystemUser, access.NewReaderAccessControl()); user != nil {
 		accepted = user.AcceptedAlerts
@@ -1989,34 +2123,41 @@ func handlerSystemGetRBAC(w http.ResponseWriter, r *http.Request, ps httprouter.
 		accepted = append(accepted, user.AcceptedAlerts...)
 	}
 	acceptedAlerts := utils.NewSetFromStringSlice(accepted)
-	var acceptable [5]map[string]string
-	var acceptableAlerts api.RESTK8sNvAcceptableAlerts
-	for i, alerts := range [][]string{clusterRoleErrors, clusterRoleBindingErrors, roleErrors, roleBindingErrors, nvCrdSchemaErrors} {
-		if len(alerts) > 0 {
-			acceptable[i] = make(map[string]string, 0)
-			for _, alert := range alerts {
-				b := md5.Sum([]byte(alert))
-				key := hex.EncodeToString(b[:])
-				if !acceptedAlerts.Contains(key) {
-					// this alert has not been accepted yet. put it in the response
-					acceptable[i][key] = alert
+
+	fedRole := cacher.GetFedMembershipRoleNoAuth()
+	otherAlerts := map[string]string{}
+	if (fedRole == api.FedRoleMaster && (acc.IsFedReader() || acc.IsFedAdmin() || acc.HasPermFed())) ||
+		(fedRole == api.FedRoleJoint && acc.HasGlobalPermissions(share.PERMS_CLUSTER_READ, 0)) {
+		// _fedClusterLeft(206), _fedClusterDisconnected(204)
+		//disconnectedStates := utils.NewSet(_fedClusterLeft, _fedClusterDisconnected)
+		var ids map[string]bool
+		if fedRole == api.FedRoleMaster {
+			ids = cacher.GetFedJoinedClusterIdMap(acc)
+		} else {
+			if m := cacher.GetFedMasterCluster(acc); m.ID != "" {
+				ids = map[string]bool{
+					m.ID: true,
+				}
+			}
+		}
+		if len(ids) > 0 {
+			for id := range ids {
+				s := cacher.GetFedJoinedClusterStatus(id, acc)
+				if elapsed := time.Since(s.LastConnectedTime); s.LastConnectedTime.IsZero() || elapsed > (time.Duration(_teleFreq)*time.Minute) {
+					key, alert := getFedDisconnectAlert(fedRole, id, acc)
+					if !acceptedAlerts.Contains(key) {
+						// this alert has not been accepted yet. put it in the response
+						otherAlerts[key] = alert
+					}
 				}
 			}
 		}
 	}
-	acceptableAlerts.ClusterRoleErrors = acceptable[0]
-	acceptableAlerts.ClusterRoleBindingErrors = acceptable[1]
-	acceptableAlerts.RoleErrors = acceptable[2]
-	acceptableAlerts.RoleBindingErrors = acceptable[3]
-	acceptableAlerts.NvCrdSchemaErrors = acceptable[4]
-	resp.AcceptableAlerts = &api.RESTK8sNvAcceptableAlerts{
-		ClusterRoleErrors:        acceptable[0],
-		ClusterRoleBindingErrors: acceptable[1],
-		RoleErrors:               acceptable[2],
-		RoleBindingErrors:        acceptable[3],
-		NvCrdSchemaErrors:        acceptable[4],
-	}
 
+	return clusterRoleErrors, clusterRoleBindingErrors, roleErrors, roleBindingErrors, nvCrdSchemaErrors, otherAlerts, acceptedAlerts
+}
+
+func getAcceptedAlerts(acceptedAlerts utils.Set) []string {
 	var acceptedManagerAlerts []string
 	for _, key := range []string{share.AlertNvNewVerAvailable, share.AlertNvInMultiVersions, share.AlertCveDbTooOld} {
 		if acceptedAlerts.Contains(key) {
@@ -2024,9 +2165,147 @@ func handlerSystemGetRBAC(w http.ResponseWriter, r *http.Request, ps httprouter.
 			acceptedManagerAlerts = append(acceptedManagerAlerts, key)
 		}
 	}
-	resp.AcceptedAlerts = acceptedManagerAlerts
 
-	restRespSuccess(w, r, &resp, acc, login, nil, "Get missing Kubernetes RBAC")
+	return acceptedManagerAlerts
+}
+
+func getAlertGroup(alerts []string, alertType api.AlertType, acceptedAlerts utils.Set) *api.RESTNvAlertGroup {
+	alertGroup := &api.RESTNvAlertGroup{
+		Type: alertType,
+	}
+
+	if len(alerts) > 0 {
+		for _, alert := range alerts {
+			b := md5.Sum([]byte(alert))
+			key := hex.EncodeToString(b[:])
+			if !acceptedAlerts.Contains(key) {
+				alertGroup.Data = append(alertGroup.Data, &api.RESTNvAlert{
+					ID:      key,
+					Message: alert,
+				})
+			}
+		}
+	}
+
+	if len(alertGroup.Data) > 0 {
+		return alertGroup
+	}
+
+	return nil
+}
+
+func getInternalCertExpireAlert(certFilePath string) (string, error) {
+	expireThresholdDays := []int{30, 90, 180}
+	// Check ca certificate expiration
+	for _, expireThresholdDay := range expireThresholdDays {
+		certExpired, err := IsCertNearExpired(certFilePath, expireThresholdDay)
+		if err != nil {
+			return "", err
+		}
+		if !certExpired {
+			continue
+		}
+
+		var certExpiredMsg string
+		if strings.Contains(certFilePath, "ca.cert") {
+			certExpiredMsg = fmt.Sprintf("Internal CA certificate will be expired in %d days", expireThresholdDay)
+		} else {
+			certExpiredMsg = fmt.Sprintf("Internal certificate will be expired in %d days", expireThresholdDay)
+		}
+
+		return certExpiredMsg, nil
+	}
+
+	return "", nil
+}
+
+func handlerSystemGetAlerts(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
+	log.WithFields(log.Fields{"URL": r.URL.String()}).Debug()
+	defer r.Body.Close()
+
+	acc, login := getAccessControl(w, r, "")
+	if acc == nil {
+		return
+	}
+
+	var resp api.RESTNvAlerts = api.RESTNvAlerts{
+		NvUpgradeInfo: &api.RESTCheckUpgradeInfo{},
+	}
+
+	// populate neuvector_upgrade_info
+	if nvUpgradeInfo := getNvUpgradeInfo(); nvUpgradeInfo != nil {
+		resp.NvUpgradeInfo = nvUpgradeInfo
+	} else {
+		resp.NvUpgradeInfo = nil
+	}
+
+	// populate acceptable_alerts
+	clusterRoleAlerts, clusterRoleBindingAlerts, roleAlerts, roleBindingAlerts, nvCrdSchemaAlerts, otherAlerts, acceptedAlerts := getAcceptableAlerts(acc, login)
+	resp.AcceptableAlerts = &api.RESTNvAcceptableAlerts{}
+	if clusterRoleAlertGroup := getAlertGroup(clusterRoleAlerts, api.AlertTypeRBAC, acceptedAlerts); clusterRoleAlertGroup != nil {
+		resp.AcceptableAlerts.ClusterRoleAlerts = clusterRoleAlertGroup
+	}
+	if clusterRoleBindingAlertGroup := getAlertGroup(clusterRoleBindingAlerts, api.AlertTypeRBAC, acceptedAlerts); clusterRoleBindingAlertGroup != nil {
+		resp.AcceptableAlerts.ClusterRoleBindingAlerts = clusterRoleBindingAlertGroup
+	}
+	if RoleAlertGroup := getAlertGroup(roleAlerts, api.AlertTypeRBAC, acceptedAlerts); RoleAlertGroup != nil {
+		resp.AcceptableAlerts.RoleAlerts = RoleAlertGroup
+	}
+	if RoleBindingAlertGroup := getAlertGroup(roleBindingAlerts, api.AlertTypeRBAC, acceptedAlerts); RoleBindingAlertGroup != nil {
+		resp.AcceptableAlerts.RoleBindingAlerts = RoleBindingAlertGroup
+	}
+	if NvCrdSchemaAlertGroup := getAlertGroup(nvCrdSchemaAlerts, api.AlertTypeRBAC, acceptedAlerts); NvCrdSchemaAlertGroup != nil {
+		resp.AcceptableAlerts.NvCrdSchemaAlerts = NvCrdSchemaAlertGroup
+	}
+	if otherAlerts != nil {
+		otherAlertGroup := &api.RESTNvAlertGroup{
+			Type: api.AlertTypeRBAC,
+		}
+		for id, msg := range otherAlerts {
+			otherAlertGroup.Data = append(otherAlertGroup.Data, &api.RESTNvAlert{
+				ID:      id,
+				Message: msg,
+			})
+		}
+		if len(otherAlertGroup.Data) > 0 {
+			resp.AcceptableAlerts.OtherAlerts = otherAlertGroup
+		}
+	}
+	certAlertGroup := &api.RESTNvAlertGroup{
+		Type: api.AlertTypeTlsCertificate,
+	}
+	internalCaCertFile := path.Join(cluster.InternalCertDir, cluster.InternalCACert)
+	if internalCaCertExpireAlert, err := getInternalCertExpireAlert(internalCaCertFile); err == nil && internalCaCertExpireAlert != "" {
+		b := md5.Sum([]byte(internalCaCertExpireAlert))
+		key := hex.EncodeToString(b[:])
+		if !acceptedAlerts.Contains(key) {
+			certAlertGroup.Data = append(certAlertGroup.Data, &api.RESTNvAlert{
+				ID:      key,
+				Message: internalCaCertExpireAlert,
+			})
+		}
+	}
+	internalCertFile := path.Join(cluster.InternalCertDir, cluster.InternalCert)
+	if internalCertExpireAlert, err := getInternalCertExpireAlert(internalCertFile); err == nil && internalCertExpireAlert != "" {
+		b := md5.Sum([]byte(internalCertExpireAlert))
+		key := hex.EncodeToString(b[:])
+		if !acceptedAlerts.Contains(key) {
+			certAlertGroup.Data = append(certAlertGroup.Data, &api.RESTNvAlert{
+				ID:      key,
+				Message: internalCertExpireAlert,
+			})
+		}
+	}
+	if len(certAlertGroup.Data) > 0 {
+		resp.AcceptableAlerts.CertificateAlerts = certAlertGroup
+	}
+
+	// populate accepted_alerts
+	if acceptedManagerAlerts := getAcceptedAlerts(acceptedAlerts); len(acceptedManagerAlerts) > 0 {
+		resp.AcceptedAlerts = acceptedManagerAlerts
+	}
+
+	restRespSuccess(w, r, &resp, acc, login, nil, "Get system alerts")
 }
 
 func configLog(ev share.TLogEvent, login *loginSession, msg string) {
@@ -2617,4 +2896,18 @@ func validateCertificate(certificate string) error {
 	// 	return errors.New("Invalid certificate, certificate doesn't contain a public key")
 	// }
 	return nil
+}
+
+func getFedDisconnectAlert(fedRole, id string, acc *access.AccessControl) (string, string) {
+	var alert string
+	if fedRole == api.FedRoleMaster {
+		clusterInfo := cacher.GetFedJoinedCluster(id, acc)
+		alert = fmt.Sprintf("Managed cluster %s is disconnected from primary cluster", clusterInfo.Name)
+	} else {
+		alert = "This cluster is disconnected from primary cluster"
+	}
+	b := md5.Sum([]byte(alert))
+	key := hex.EncodeToString(b[:])
+
+	return key, alert
 }

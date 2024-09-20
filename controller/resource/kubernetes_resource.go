@@ -51,6 +51,7 @@ const (
 	K8sApiVersionV1Beta1          = "v1beta1"
 	K8sApiVersionV1Beta2          = "v1beta2"
 	K8sResCronjobs                = "cronjobs"
+	K8sResCronjobsFinalizer       = "cronjobs/finalizers"
 	K8sResDaemonsets              = "daemonsets"
 	K8sResDeployments             = "deployments"
 	K8sResDeploymentConfigs       = "deploymentconfigs"
@@ -109,6 +110,10 @@ const (
 	nvSecretRoleBinding         = NvSecretRole
 	NvAdminRoleBinding          = "neuvector-admin"
 	nvViewRoleBinding           = "neuvector-binding-view"
+	NvJobCreationRole           = "neuvector-binding-job-creation"
+	NvJobCreationRoleBinding    = NvJobCreationRole
+	NvCertUpgraderRole          = "neuvector-binding-cert-upgrader"
+	NvCertUpgraderRoleBinding   = NvCertUpgraderRole
 )
 
 const (
@@ -885,6 +890,12 @@ func xlatePod(obj metav1.Object) (string, interface{}) {
 			if c.SecurityContext != nil && c.SecurityContext.Privileged != nil {
 				ctr.Privileged = *c.SecurityContext.Privileged
 			}
+			if memory, ok := c.Resources.Requests["memory"]; ok {
+				ctr.RequestMemory = memory.String()
+			}
+			if memory, ok := c.Resources.Limits["memory"]; ok {
+				ctr.LimitMemory = memory.String()
+			}
 			r.Containers = append(r.Containers, ctr)
 		}
 		if r.SA = o.Spec.ServiceAccountName; r.SA == "" {
@@ -930,7 +941,7 @@ func xlatePod(obj metav1.Object) (string, interface{}) {
 
 func xlateDeployment(obj metav1.Object) (string, interface{}) {
 	if o, ok := obj.(*appsv1.Deployment); ok && o != nil {
-		if o.GetNamespace() != NvAdmSvcNamespace || o.GetName() != "neuvector-scanner-pod" {
+		if o.GetNamespace() != NvAdmSvcNamespace {
 			return "", nil
 		}
 		r := &Deployment{
@@ -997,7 +1008,7 @@ func xlateStatefulSet(obj metav1.Object) (string, interface{}) {
 }
 
 func xlateCronJob(obj metav1.Object) (string, interface{}) {
-	var r CronJob = CronJob{
+	var r *CronJob = &CronJob{
 		UID:    string(obj.GetUID()),
 		Name:   obj.GetName(),
 		Domain: obj.GetNamespace(),
@@ -1319,15 +1330,15 @@ func (d *kubernetes) RegisterResource(rt string) error {
 	return err
 }
 
-func (d *kubernetes) ListResource(rt string) ([]interface{}, error) {
+func (d *kubernetes) ListResource(rt, namespace string) ([]interface{}, error) {
 	if rt == RscTypeRBAC {
 		return nil, ErrResourceNotSupported
 	} else {
-		return d.listResource(rt)
+		return d.listResource(rt, namespace)
 	}
 }
 
-func (d *kubernetes) listResource(rt string) ([]interface{}, error) {
+func (d *kubernetes) listResource(rt, namespace string) ([]interface{}, error) {
 	log.WithFields(log.Fields{"resource": rt}).Debug()
 
 	maker, err := d.discoverResource(rt)
@@ -1343,7 +1354,7 @@ func (d *kubernetes) listResource(rt string) ([]interface{}, error) {
 
 	objs := maker.newList()
 	d.lock.Lock()
-	err = d.client.List(context.Background(), k8s.AllNamespaces, objs)
+	err = d.client.List(context.Background(), namespace, objs)
 	d.lock.Unlock()
 	if err != nil {
 		return nil, err
@@ -1460,10 +1471,11 @@ func (d *kubernetes) startWatchResource(rt, ns string, wcb orchAPI.WatchCallback
 					atomic.StoreInt32(&watchFailedFlag, 1)
 				}
 
-				if scb != nil {
-					scb(ConnStateDisconnected, e)
-				}
+				// Ignore io.EOF per https://github.com/kubernetes/client-go/issues/623
 				if !strings.HasSuffix(e.Error(), io.EOF.Error()) {
+					if scb != nil {
+						scb(ConnStateDisconnected, e)
+					}
 					log.WithFields(log.Fields{"resource": rt, "error": e}).Error("Watch failure")
 					time.Sleep(kubeWatchRetry)
 				}
@@ -1870,7 +1882,7 @@ func AdjustAdmResForOC() {
 				},
 			}}
 		rbacRoleBindingsWanted[nvOperatorsRoleBinding] = &k8sRbacBindingInfo{
-			subjects: enforcerSubjecstWanted,
+			subjects: enforcerSubjectsWanted,
 			rbacRole: rbacRolesWanted[nvOperatorsRole],
 		}
 	}
@@ -1950,7 +1962,7 @@ func IsRancherFlavor() bool {
 		log.WithFields(log.Fields{"namespace": nsName, "err": err}).Info("resource no found")
 	} else {
 		if len(nvRscMapSSO) == 0 {
-			svcnames := []string{"cattle-cluster-agent", "rancher"}
+			svcnames := []string{"cattle-cluster-agent", "rancher", "rancher-prime"}
 			nvPermitsRscSSO := utils.NewSetFromStringSlice([]string{
 				share.PERM_REG_SCAN_ID,
 				share.PERM_CICD_SCAN_ID,
@@ -1967,13 +1979,29 @@ func IsRancherFlavor() bool {
 				share.PERMS_SECURITY_EVENTS_ID,
 				share.PERM_FED_ID,
 			})
+			permIDtoCRD := map[string]string{
+				share.PERM_REG_SCAN_ID:          "registryscan",
+				share.PERM_CICD_SCAN_ID:         "ciscan",
+				share.PERM_ADM_CONTROL_ID:       "admissioncontrol",
+				share.PERM_AUDIT_EVENTS_ID:      "auditevents",
+				share.PERM_EVENTS_ID:            "events",
+				share.PERM_AUTHENTICATION_ID:    "authentication",
+				share.PERM_AUTHORIZATION_ID:     "authorization",
+				share.PERM_SYSTEM_CONFIG_ID:     "systemconfig",
+				share.PERM_VULNERABILITY_ID:     "vulnerability",
+				share.PERMS_RUNTIME_SCAN_ID:     "runtimescan",
+				share.PERMS_RUNTIME_POLICIES_ID: "runtimepolicy",
+				share.PERMS_COMPLIANCE_ID:       "compliance",
+				share.PERMS_SECURITY_EVENTS_ID:  "securityevents",
+				share.PERM_FED_ID:               "federation",
+			}
 			for _, svcname := range svcnames {
 				if _, err := global.ORCH.GetResource(RscTypeService, nsName, svcname); err == nil {
 					log.WithFields(log.Fields{"namespace": nsName, "service": svcname}).Info("resource found")
-					// For Rancher SSO only: nv permission string -> nv permission uint32 value
-					nvPermitsValueSSO = make(map[string]share.NvPermissions, nvPermitsRscSSO.Cardinality())
+					// For Rancher SSO only: nv permission crd kind -> nv permission uint32 value
+					nvPermitsValueSSO = make(map[string]share.NvPermissions, nvPermitsRscSSO.Cardinality()+len(permIDtoCRD))
 					for _, option := range access.PermissionOptions {
-						if nvPermitsRscSSO.Contains(option.ID) {
+						if crdKind, ok := permIDtoCRD[option.ID]; ok || nvPermitsRscSSO.Contains(option.ID) {
 							var readPermits uint32
 							var writePermits uint32
 							if len(option.ComplexPermits) > 0 {
@@ -1993,14 +2021,21 @@ func IsRancherFlavor() bool {
 									writePermits |= option.Value
 								}
 							}
-							optionID := strings.ReplaceAll(option.ID, "_", "-")
-							nvPermitsValueSSO[optionID] = share.NvPermissions{ReadValue: readPermits, WriteValue: writePermits}
+							if ok {
+								nvPermitsValueSSO[crdKind] = share.NvPermissions{ReadValue: readPermits, WriteValue: writePermits}
+								nvPermitsRscSSO.Add(crdKind)
+							}
+							if nvPermitsRscSSO.Contains(option.ID) {
+								optionID := strings.ReplaceAll(option.ID, "_", "-")
+								nvPermitsValueSSO[optionID] = share.NvPermissions{ReadValue: readPermits, WriteValue: writePermits}
+							}
 						}
 					}
 
-					nvRscMapSSO = map[string]utils.Set{ // apiGroup -> nv-perm resources
+					nvRscMapSSO = map[string]utils.Set{ // apiGroup -> neuvector permission resources
 						"read-only.neuvector.api.io": nvPermitsRscSSO,
 						"api.neuvector.com":          nvPermitsRscSSO,
+						"permission.neuvector.com":   nvPermitsRscSSO,
 						"*":                          nvPermitsRscSSO,
 					}
 
@@ -2054,38 +2089,79 @@ func CreateNvCrdObject(rt string) (interface{}, error) {
 	return maker.newObject(), nil
 }
 
-func getNeuvectorSvcAccount(resInfo map[string]string) {
+func getNeuvectorSvcAccount() {
 	// controller's sa is known by k8s token, not by deployment resource
+	resInfo := map[string]string{ // resource object name : resource type
+		"neuvector-updater-pod":          RscTypeCronJob,
+		"neuvector-enforcer-pod":         RscTypeDaemonSet,
+		"neuvector-scanner-pod":          RscTypeDeployment,
+		"neuvector-registry-adapter-pod": RscTypeDeployment,
+		"neuvector-cert-upgrader-pod":    RscTypeCronJob,
+	}
+
 	for objName, rt := range resInfo {
 		var sa string
 		obj, err := global.ORCH.GetResource(rt, NvAdmSvcNamespace, objName)
 		if err != nil {
+			if objName == "neuvector-registry-adapter-pod" {
+				// registry_adapter is not deployed. do not include its sa in the rbac checking/alert
+				regAdapterSubjectWanted = ""
+			}
 			log.WithFields(log.Fields{"name": objName, "rt": rt, "err": err}).Error("resource no found")
 			continue
 		}
 		switch objName {
-		case "neuvector-updater-pod": // get updater cronjob service account
+		case "neuvector-updater-pod", "neuvector-cert-upgrader-pod":
 			if cronjobObj, ok := obj.(*CronJob); ok {
 				sa = cronjobObj.SA
-				if updaterSubjectWanted != sa {
+
+				switch objName {
+				case "neuvector-updater-pod":
 					updaterSubjectWanted = sa
-					scannerSubjecstWanted[0] = ctrlerSubjectWanted
-					scannerSubjecstWanted[1] = updaterSubjectWanted
+					scannerSubjectsWanted[0] = updaterSubjectWanted
+					scannerSubjectsWanted[1] = ctrlerSubjectWanted
+				case "neuvector-cert-upgrader-pod":
+					certUpgraderSubjectWanted = sa
+					certUpgraderSubjectsWanted[0] = certUpgraderSubjectWanted
 				}
 			}
 		case "neuvector-enforcer-pod": // get enforcer daemonset service account
 			if dsObj, ok := obj.(*DaemonSet); ok {
-				sa = dsObj.SA
-				if enforcerSubjectWanted != sa {
-					enforcerSubjectWanted = sa
-					enforcerSubjecstWanted[0] = ctrlerSubjectWanted
-					enforcerSubjecstWanted[1] = enforcerSubjectWanted
+				enforcerSubjectWanted = dsObj.SA
+				sa = enforcerSubjectWanted
+				enforcerSubjectsWanted[0] = enforcerSubjectWanted
+				enforcerSubjectsWanted[1] = ctrlerSubjectWanted
+			}
+		case "neuvector-scanner-pod", "neuvector-registry-adapter-pod":
+			if o, ok := obj.(*appsv1.Deployment); ok && o != nil {
+				sa = "default"
+				spec := o.Spec.Template.Spec
+				if spec.ServiceAccountName != "" {
+					sa = spec.ServiceAccountName
+				} else if spec.DeprecatedServiceAccount != "" {
+					sa = spec.DeprecatedServiceAccount
+				}
+				switch objName {
+				case "neuvector-scanner-pod": // get scanner deployment service account
+					scannerSubjectWanted = sa
+				case "neuvector-registry-adapter-pod": // get registry-adapter deployment service account
+					regAdapterSubjectWanted = sa
 				}
 			}
 		}
 		log.WithFields(log.Fields{"name": objName, "sa": sa}).Info()
 		continue
 	}
+	if regAdapterSubjectWanted == "" {
+		// it means neuvector-registry-adapter-pod is not deployed.
+		// so the alert message for rolebinding neuvector-binding-secret will not containsa the "registry-adapter" sa
+		regAdapterSubjectWanted = ctrlerSubjectWanted
+	}
+
+	secretSubjectsWanted[0] = enforcerSubjectWanted
+	secretSubjectsWanted[1] = ctrlerSubjectWanted
+	secretSubjectsWanted[2] = scannerSubjectWanted
+	secretSubjectsWanted[3] = regAdapterSubjectWanted
 }
 
 func xlatePersistentVolumeClaim(obj metav1.Object) (string, interface{}) {
@@ -2112,4 +2188,28 @@ func RetrieveBootstrapPassword() string {
 	}
 
 	return bootstrapPwd
+}
+
+func GetNvControllerPodsNumber() {
+	var requestMemory string
+	var limitMemory string
+	var podsIP []string
+
+	pods, err := global.ORCH.ListResource(RscTypePod, NvAdmSvcNamespace)
+	if err == nil {
+		for _, obj := range pods {
+			if pod, ok := obj.(*Pod); ok && pod != nil {
+				if v, ok := pod.Labels["app"]; ok && v == "neuvector-controller-pod" {
+					for _, ctr := range pod.Containers {
+						if ctr.RequestMemory != requestMemory || ctr.LimitMemory != limitMemory {
+							requestMemory = ctr.RequestMemory
+							limitMemory = ctr.LimitMemory
+						}
+					}
+					podsIP = append(podsIP, pod.IPNet.String())
+				}
+			}
+		}
+	}
+	log.WithFields(log.Fields{"pods": strings.Join(podsIP, ","), "requests": requestMemory, "limits": limitMemory, "err": err}).Info()
 }

@@ -1162,7 +1162,6 @@ func TestCompileApiUrisMappingMapping(t *testing.T) {
 			"v1/fed/healthcheck",
 		},
 		CONST_API_DEBUG: []string{
-			"v1/fed/member",
 			"v1/meter",
 			"v1/enforcer/*/probe_summary",
 			"v1/enforcer/*/probe_processes",
@@ -1180,7 +1179,7 @@ func TestCompileApiUrisMappingMapping(t *testing.T) {
 			"v1/session/summary",
 			"v1/file_monitor_file",
 			"v1/system/usage",
-			"v1/system/rbac",
+			"v1/system/alerts",
 		},
 		CONST_API_RT_SCAN: []string{
 			"v1/scan/config",
@@ -1195,6 +1194,7 @@ func TestCompileApiUrisMappingMapping(t *testing.T) {
 			"v1/scan/platform/platform",
 			"v1/scan/asset",
 			"v1/vulasset",
+			"v1/scan/asset/images",
 		},
 		CONST_API_REG_SCAN: []string{
 			"v1/scan/registry",
@@ -1299,6 +1299,7 @@ func TestCompileApiUrisMappingMapping(t *testing.T) {
 			"v1/list/compliance",
 			"v1/compliance/profile",
 			"v1/compliance/profile/*",
+			"v1/compliance/available_filter",
 		},
 		CONST_API_AUDIT_EVENTS: []string{
 			"v1/log/audit",
@@ -1346,6 +1347,7 @@ func TestCompileApiUrisMappingMapping(t *testing.T) {
 			"v1/internal/system",
 		},
 		CONST_API_FED: []string{
+			"v1/fed/member",
 			"v1/fed/join_token",
 			"v1/fed/cluster/*/**",
 			"v1/fed/view/*",
@@ -1385,6 +1387,7 @@ func TestCompileApiUrisMappingMapping(t *testing.T) {
 			"v1/scan/platform/platform",
 			"v1/vulasset",
 			"v1/assetvul",
+			"v1/scan/asset/images",
 		},
 		CONST_API_REG_SCAN: []string{
 			"v1/scan/registry/*/scan",

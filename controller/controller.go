@@ -144,20 +144,25 @@ func getLocalInfo(selfID string, pid2ID map[int]string) error {
 // It's likely all controllers starts together and this is a new cluster.
 func likelyNewCluster() bool {
 	clusHelper := kv.GetClusterHelper()
-	all := clusHelper.GetAllControllers()
+	all, err := clusHelper.GetAllControllers()
+	if err != nil {
+		log.WithFields(log.Fields{"err": err}).Error()
+	}
 
 	if len(all) <= 1 {
 		return true
 	}
 
 	var oldest *share.CLUSController
+	ips := utils.NewSet()
 	for _, c := range all {
+		ips.Add(c.ClusterIP)
 		if oldest == nil || c.StartedAt.Before(oldest.StartedAt) {
 			oldest = c
 		}
 	}
 
-	log.WithFields(log.Fields{"oldest": oldest.ID}).Info()
+	log.WithFields(log.Fields{"oldest": oldest.ID, "all": ips.ToStringSlice()}).Info()
 
 	if oldest.ID == Ctrler.ID {
 		return true
@@ -207,29 +212,30 @@ func getConfigKvData(key string) ([]byte, bool) {
 func main() {
 	var joinAddr, advAddr, bindAddr string
 	var err error
+	debug := false
 
 	log.SetOutput(os.Stdout)
-	log.SetLevel(log.InfoLevel)
+	log.SetLevel(share.CLUSGetLogLevel(common.CtrlLogLevel))
 	log.SetFormatter(&utils.LogFormatter{Module: "CTL"})
 
 	connLog := log.New()
 	connLog.Out = os.Stdout
-	connLog.Level = log.InfoLevel
+	connLog.Level = share.CLUSGetLogLevel(common.CtrlLogLevel)
 	connLog.Formatter = &utils.LogFormatter{Module: "CTL"}
 
 	scanLog := log.New()
 	scanLog.Out = os.Stdout
-	scanLog.Level = log.InfoLevel
+	scanLog.Level = share.CLUSGetLogLevel(common.CtrlLogLevel)
 	scanLog.Formatter = &utils.LogFormatter{Module: "CTL"}
 
 	mutexLog := log.New()
 	mutexLog.Out = os.Stdout
-	mutexLog.Level = log.InfoLevel
+	mutexLog.Level = share.CLUSGetLogLevel(common.CtrlLogLevel)
 	mutexLog.Formatter = &utils.LogFormatter{Module: "CTL"}
 
 	k8sResLog = log.New()
 	k8sResLog.Out = os.Stdout
-	k8sResLog.Level = log.InfoLevel
+	k8sResLog.Level = share.CLUSGetLogLevel(common.CtrlLogLevel)
 	k8sResLog.Formatter = &utils.LogFormatter{Module: "CTL"}
 
 	log.WithFields(log.Fields{"version": Version}).Info("START")
@@ -239,7 +245,7 @@ func main() {
 	adv := flag.String("a", "", "Cluster advertise address")
 	bind := flag.String("b", "", "Cluster bind address")
 	rtSock := flag.String("u", "", "Container socket URL")
-	debug := flag.Bool("d", false, "Enable control path debug")
+	log_level := flag.String("log_level", share.LogLevel_Info, "Controller log level")
 	restPort := flag.Uint("p", api.DefaultControllerRESTAPIPort, "REST API server port")
 	fedPort := flag.Uint("fed_port", 11443, "Fed REST API server port")
 	rpcPort := flag.Uint("rpc_port", 0, "Cluster server RPC port")
@@ -247,6 +253,7 @@ func main() {
 	grpcPort := flag.Uint("grpc_port", 0, "Cluster GRPC port")
 	internalSubnets := flag.String("n", "", "Predefined internal subnets")
 	persistConfig := flag.Bool("pc", false, "Persist configurations")
+	searchRegistries := flag.String("search_registries", "", "Comma separated list of search registries for shortnames")
 	admctrlPort := flag.Uint("admctrl_port", 20443, "Admission Webhook server port")
 	crdvalidatectrlPort := flag.Uint("crdvalidatectrl_port", 30443, "general crd Webhook server port")
 	pwdValidUnit := flag.Uint("pwd_valid_unit", 1440, "")
@@ -264,11 +271,19 @@ func main() {
 	custom_check_control := flag.String("cbench", share.CustomCheckControl_Disable, "Custom check control")
 	flag.Parse()
 
-	if *debug {
-		log.SetLevel(log.DebugLevel)
-		scanLog.SetLevel(log.DebugLevel)
-		k8sResLog.SetLevel(log.DebugLevel)
-		ctrlEnv.debugCPath = true
+	// default log_level is LogLevel_Info
+	if *log_level != "" && *log_level != common.CtrlLogLevel {
+		common.CtrlLogLevel = *log_level
+		log.SetLevel(share.CLUSGetLogLevel(common.CtrlLogLevel))
+		scanLog.Level = share.CLUSGetLogLevel(common.CtrlLogLevel)
+		k8sResLog.Level = share.CLUSGetLogLevel(common.CtrlLogLevel)
+		if *log_level == share.LogLevel_Debug {
+			debug = true
+			ctrlEnv.debugCPath = true
+		} else {
+			connLog.Level = share.CLUSGetLogLevel(common.CtrlLogLevel)
+			mutexLog.Level = share.CLUSGetLogLevel(common.CtrlLogLevel)
+		}
 	}
 	if *join != "" {
 		// Join addresses might not be all ready. Accept whatever input is, resolve them
@@ -452,8 +467,8 @@ func main() {
 		global.ORCH.SetIPAddrScope(Ctrler.Ifaces, &meta, networks)
 	}
 
-	log.WithFields(log.Fields{"host": Host}).Info("")
-	log.WithFields(log.Fields{"ctrler": Ctrler}).Info("")
+	log.WithFields(log.Fields{"host": Host}).Info()
+	log.WithFields(log.Fields{"ctrler": Ctrler}).Info()
 
 	// Other objects
 	timerWheel = utils.NewTimerWheel()
@@ -481,7 +496,7 @@ func main() {
 		ctx, internalCertControllerCancel = context.WithCancel(context.Background())
 		defer internalCertControllerCancel()
 		// Initialize secrets.  Most of services are not running at this moment, so skip their reload functions.
-		err = migration.InitializeInternalSecretController(ctx, []func([]byte, []byte, []byte) error{
+		capable, err := migration.InitializeInternalSecretController(ctx, []func([]byte, []byte, []byte) error{
 			// Reload consul
 			func(cacert []byte, cert []byte, key []byte) error {
 				log.Info("Reloading consul config")
@@ -504,7 +519,16 @@ func main() {
 			log.WithError(err).Error("failed to initialize internal secret controller")
 			os.Exit(-2)
 		}
-		log.Info("internal certificate is initialized")
+		if capable {
+			log.Info("internal certificate is initialized")
+		} else {
+			if os.Getenv("NO_FALLBACK") == "" {
+				log.Warn("required permission is missing...fallback to the built-in certificate if it exists")
+			} else {
+				log.Error("required permission is missing...ending now")
+				os.Exit(-2)
+			}
+		}
 	}
 
 	err = cluster.ReloadInternalCert()
@@ -520,7 +544,7 @@ func main() {
 
 	db.CreateVulAssetDb(false)
 
-	kv.Init(Ctrler.ID, dev.Ctrler.Ver, Host.Platform, Host.Flavor, *persistConfig, isGroupMember, getConfigKvData)
+	kv.Init(Ctrler.ID, dev.Ctrler.Ver, Host.Platform, Host.Flavor, *persistConfig, isGroupMember, getConfigKvData, evqueue)
 	ruleid.Init()
 
 	// Start cluster
@@ -535,7 +559,7 @@ func main() {
 		RPCPort:       *rpcPort,
 		LANPort:       *lanPort,
 		DataCenter:    cluster.DefaultDataCenter,
-		EnableDebug:   *debug,
+		EnableDebug:   debug,
 	}
 	self, lead, err := clusterStart(clusterCfg)
 	if err != nil {
@@ -554,6 +578,12 @@ func main() {
 		*grpcPort = cluster.DefaultControllerGRPCPort
 	}
 	Ctrler.RPCServerPort = uint16(*grpcPort)
+
+	// pre-build compliance map
+	scanUtils.InitComplianceMeta(Host.Platform, Host.Flavor, Host.CloudPlatform)
+	scanUtils.InitImageBenchMeta()
+	scanUtils.UpdateComplianceConfigs()
+	Ctrler.ReadPrimeConfig = scanUtils.ReadPrimeConfig
 
 	ctlrPutLocalInfo()
 
@@ -579,6 +609,9 @@ func main() {
 	// important because the new leader maybe just started and does not possess the graph data.
 
 	isNewCluster := likelyNewCluster()
+	if platform == share.PlatformKubernetes {
+		resource.GetNvControllerPodsNumber()
+	}
 
 	log.WithFields(log.Fields{"ctrler": Ctrler, "lead": lead, "self": self, "new-cluster": isNewCluster,
 		"noDefAdmin": *noDefAdmin, "cspEnv": *cspEnv}).Info()
@@ -593,7 +626,14 @@ func main() {
 		log.WithError(err).Warn("installation id is not readable. Will retry later.")
 	}
 
-	if Ctrler.Leader {
+	emptyKvFound := false
+	ver := kv.GetControlVersion()
+	if ver.CtrlVersion == "" && ver.KVVersion == "" {
+		emptyKvFound = true
+	}
+	log.WithFields(log.Fields{"emptyKvFound": emptyKvFound, "ver": ver}).Info()
+
+	if Ctrler.Leader || emptyKvFound {
 		// See [NVSHAS-5490]:
 		// clusterHelper.AcquireLock() may fail with error "failed to create session: Unexpected response code: 500 (Missing node registration)".
 		// It indicates that the node is not yet registered in the catalog.
@@ -613,7 +653,22 @@ func main() {
 		// Restore persistent config.
 		// Calling restore is unnecessary if this is not a new cluster installation, but not a big issue,
 		// assuming the PV should have the latest config.
-		restoredFedRole, defAdminRestored, _ = kv.GetConfigHelper().Restore()
+		var restored bool
+		var restoredKvVersion string
+		var errRestore error
+		restoredFedRole, defAdminRestored, restored, restoredKvVersion, errRestore = kv.GetConfigHelper().Restore()
+		if restored && errRestore == nil {
+			clog := share.CLUSEventLog{
+				Event:          share.CLUSEvKvRestored,
+				HostID:         Host.ID,
+				HostName:       Host.Name,
+				ControllerID:   Ctrler.ID,
+				ControllerName: Ctrler.Name,
+				ReportedAt:     time.Now().UTC(),
+				Msg:            fmt.Sprintf("Restored kv version: %s", restoredKvVersion),
+			}
+			evqueue.Append(&clog)
+		}
 		if restoredFedRole == api.FedRoleJoint {
 			// fed rules are not restored on joint cluster but there might be fed rules left in kv so
 			// 	we need to clean up fed rules & revisions in kv
@@ -642,7 +697,7 @@ func main() {
 	// upgrade case, (not new cluster), the new controller (not a lead) should upgrade
 	// the KV so it can behave correctly. The old lead won't be affected, in theory.
 	crossCheckCRD := false
-	if Ctrler.Leader || !isNewCluster {
+	if Ctrler.Leader || !isNewCluster || emptyKvFound {
 		nvImageVersion := Version
 		if strings.HasPrefix(nvImageVersion, "interim/") {
 			// it's daily dev build image
@@ -704,10 +759,6 @@ func main() {
 		checkDefAdminFreq = 0 // do not check default admin's password if it's disabled
 	}
 
-	// pre-build compliance map
-	scanUtils.InitComplianceMeta(Host.Platform, Host.Flavor, Host.CloudPlatform)
-	go scanUtils.UpdateComplianceConfigs()
-
 	// start orchestration connection.
 	// orchConnector should be created before LeadChangeCb is registered.
 	orchObjChan := make(chan *resource.Event, 32)
@@ -766,6 +817,7 @@ func main() {
 		RestConfigFunc:           rest.RestConfig,
 		CreateQuerySessionFunc:   rest.CreateQuerySession,
 		DeleteQuerySessionFunc:   rest.DeleteQuerySession,
+		NotifyCertChange:         nil, // To be filled later
 	}
 	cacher = cache.Init(&cctx, Ctrler.Leader, lead, restoredFedRole)
 	cache.ScannerChangeNotify(Ctrler.Leader)
@@ -815,6 +867,7 @@ func main() {
 		FedPort:            *fedPort,
 		PwdValidUnit:       *pwdValidUnit,
 		TeleNeuvectorURL:   *teleNeuvectorEP,
+		SearchRegistries:   *searchRegistries,
 		TeleFreq:           *telemetryFreq,
 		NvAppFullVersion:   nvAppFullVersion,
 		NvSemanticVersion:  nvSemanticVersion,
@@ -839,6 +892,9 @@ func main() {
 
 	// init rest server context before listening KV object store, as federation server can be started from there.
 	rest.InitContext(&rctx)
+
+	// Assign callback so cert manager can receive cert changes.
+	cctx.NotifyCertChange = rest.CertManager.NotifyChanges
 
 	// Registry cluster event handlers
 	cluster.RegisterLeadChangeWatcher(leadChangeHandler, lead)
@@ -890,8 +946,8 @@ func main() {
 			cacher.SyncAdmCtrlStateToK8s(resource.NvAdmSvcName, resource.NvAdmValidatingName, false)
 		}
 		go rest.CleanupSessCfgCache()
-		go rest.AdmissionRestServer(*admctrlPort, false, *debug)
-		go rest.CrdValidateRestServer(*crdvalidatectrlPort, false, *debug)
+		go rest.AdmissionRestServer(*admctrlPort, false, debug)
+		go rest.CrdValidateRestServer(*crdvalidatectrlPort, false, debug)
 	}
 
 	go rest.FedPollingClient(Ctrler.Leader, purgeFedRulesOnJoint)
@@ -972,7 +1028,7 @@ func main() {
 
 func amendStubRtInfo() error {
 	podname := Ctrler.Name
-	objs, err := global.ORCH.ListResource(resource.RscTypeNamespace)
+	objs, err := global.ORCH.ListResource(resource.RscTypeNamespace, "")
 	if err == nil {
 		for _, obj := range objs {
 			if domain := obj.(*resource.Namespace); domain != nil {

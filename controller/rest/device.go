@@ -418,6 +418,26 @@ func handlerControllerConfig(w http.ResponseWriter, r *http.Request, ps httprout
 			cconf.Debug = *rconf.Config.Debug
 		}
 
+		if rconf.Config.LogLevel != nil {
+			cconf.LogLevel = *rconf.Config.LogLevel
+			if cconf.LogLevel == share.LogLevel_Error ||
+			   cconf.LogLevel == share.LogLevel_Warn ||
+			   cconf.LogLevel == share.LogLevel_Info {
+				cconf.Debug = nil
+			} else if cconf.LogLevel == share.LogLevel_Debug {
+				if cconf.Debug == nil {
+					cconf.Debug = make([]string, 0)
+					cconf.Debug = append(cconf.Debug, "cpath")
+				}
+			}
+		} else {
+			if rconf.Config.Debug != nil {
+				cconf.LogLevel = share.LogLevel_Debug
+			} else {
+				cconf.LogLevel = ""
+			}
+		}
+
 		if !acc.Authorize(&cconf, nil) {
 			restRespAccessDenied(w, login)
 			return
@@ -513,6 +533,26 @@ func handlerAgentConfig(w http.ResponseWriter, r *http.Request, ps httprouter.Pa
 
 		if rconf.Config.DisableKvCCtl != nil {
 			cconf.DisableKvCongestCtl = *rconf.Config.DisableKvCCtl
+		}
+
+		if rconf.Config.LogLevel != nil {
+			cconf.LogLevel = *rconf.Config.LogLevel
+			if cconf.LogLevel == share.LogLevel_Error ||
+			   cconf.LogLevel == share.LogLevel_Warn ||
+			   cconf.LogLevel == share.LogLevel_Info {
+				cconf.Debug = nil
+			} else if cconf.LogLevel == share.LogLevel_Debug {
+				if cconf.Debug == nil {
+					cconf.Debug = make([]string, 0)
+					cconf.Debug = append(cconf.Debug, "cpath")
+				}
+			}
+		} else {
+			if rconf.Config.Debug != nil {
+				cconf.LogLevel = share.LogLevel_Debug
+			} else {
+				cconf.LogLevel = ""
+			}
 		}
 
 		if !acc.Authorize(&cconf, nil) {

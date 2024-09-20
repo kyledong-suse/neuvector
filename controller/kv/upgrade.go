@@ -53,6 +53,10 @@ func upgradeSystemConfig(cfg *share.CLUSSystemConfig) (bool, bool) {
 		cfg.NewServicePolicyMode = common.DefaultSystemConfig.NewServicePolicyMode
 		upd = true
 	}
+	if cfg.NewServiceProfileMode == "" {
+		cfg.NewServiceProfileMode = common.DefaultSystemConfig.NewServiceProfileMode
+		upd = true
+	}
 	if cfg.NewServiceProfileBaseline == "" {
 		cfg.NewServiceProfileBaseline = common.DefaultSystemConfig.NewServiceProfileBaseline
 		upd = true
@@ -789,7 +793,9 @@ var phases []kvVersions = []kvVersions{
 
 	{"FCAB0BF2", upgradeDefSecRisksProfiles},
 
-	{"449EC339", nil},
+	{"449EC339", dummyFunc},
+
+	{"D6AD17D4", nil},
 }
 
 func latestKVVersion() string {
@@ -960,6 +966,11 @@ const (
 	_fedClusterUpgradeOngoing = 103 // do not change
 )
 
+func GetControlVersion() share.CLUSCtrlVersion {
+	ver := getControlVersion()
+	return *ver
+}
+
 // check if the request handling cluster can handle request from the requesting cluster
 // for "fed kv version":
 //  1. the request handling cluster & requesting cluster have the same "fed kv version", it means they can handle requests from each other in the same federation
@@ -1013,7 +1024,8 @@ func GetFedKvVer() string { // NV clusters with the same "fed kv version" means 
 func GetRestVer() string { // NV clusters with the same "rest version" means master cluster can switch UI view to them
 	// return "E907B7AE" // for 5.0
 	// return "28ea479c" // for 5.1 ~ 5.2.x
-	return "449EC339" // for 5.3
+	// return "449EC339" // for 5.3 ~ 5.3.x
+	return "D6AD17D4" // for 5.4
 }
 
 func genFileAccessRule() {

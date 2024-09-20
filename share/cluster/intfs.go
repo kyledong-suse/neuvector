@@ -1073,6 +1073,8 @@ func SetLogLevel(level log.Level) {
 	}
 
 	switch level {
+	case log.ErrorLevel:
+	case log.WarnLevel:
 	case log.InfoLevel:
 		clusterCfg.Debug = false
 	case log.DebugLevel:
@@ -1089,5 +1091,4 @@ func SetLogLevel(level log.Level) {
 			curLogLevel = level
 		}
 	*/
-	return
 }

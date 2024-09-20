@@ -277,6 +277,7 @@ func handlesystemcfg(yaml_data []byte, load bool, skip *bool, context *configMap
 	rconf := api.RESTSystemConfigConfigData{
 		Config: &api.RESTSystemConfigConfig{
 			NewServicePolicyMode:      rc.NewServicePolicyMode,
+			NewServiceProfileMode:     rc.NewServiceProfileMode,
 			NewServiceProfileBaseline: rc.NewServiceProfileBaseline,
 			UnusedGroupAging:          rc.UnusedGroupAging,
 			SyslogServer:              rc.SyslogServer,
@@ -309,6 +310,8 @@ func handlesystemcfg(yaml_data []byte, load bool, skip *bool, context *configMap
 			ScannerAutoscale:          rc.ScannerAutoscale,
 			NoTelemetryReport:         rc.NoTelemetryReport,
 			RemoteRepositories:        rc.RemoteRepositories,
+			EnableTLSVerification:     rc.EnableTLSVerification,
+			GlobalCaCerts:             rc.GlobalCaCerts,
 		},
 		NetConfig: &api.RESTSysNetConfigConfig{
 			NetServiceStatus:     rc.NetServiceStatus,

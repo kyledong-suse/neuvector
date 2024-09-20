@@ -173,6 +173,7 @@ type RESTRiskScoreMetrics struct {
 	K8sVersion       string                    `json:"kube_version"`
 	OCVersion        string                    `json:"openshift_version"`
 	NewServiceMode   string                    `json:"new_service_policy_mode"`
+	NewProfileMode   string                    `json:"new_service_profile_mode"`
 	DenyAdmCtrlRules int                       `json:"deny_adm_ctrl_rules"`
 	Hosts            int                       `json:"hosts"`
 	WLs              RESTRiskScoreMetricsWL    `json:"workloads"`
@@ -187,6 +188,7 @@ type RESTExposedEndpoint struct {
 	PodName        string                         `json:"pod_name"`
 	Service        string                         `json:"service"`
 	ThreatSeverity string                         `json:"severity"`
+	CriticalVuls   int                            `json:"critical"`
 	HighVuls       int                            `json:"high"`
 	MedVuls        int                            `json:"medium"`
 	PolicyMode     string                         `json:"policy_mode"`
@@ -223,6 +225,39 @@ type RESTK8sNvAcceptableAlerts struct {
 	OtherAlerts              map[string]string `json:"other_alerts"`              // key is md5 of the English message
 }
 
+type RESTNvAlerts struct {
+	NvUpgradeInfo            *RESTCheckUpgradeInfo   `json:"neuvector_upgrade_info"`
+	AcceptableAlerts         *RESTNvAcceptableAlerts `json:"acceptable_alerts,omitempty"` // acceptable controller-generated alerts
+	AcceptedAlerts           []string                `json:"accepted_alerts,omitempty"`   // keys of accepted manager-generated/user alerts
+}
+
+type RESTNvAcceptableAlerts struct {
+	ClusterRoleAlerts        *RESTNvAlertGroup `json:"clusterrole_alerts,omitempty"`
+	ClusterRoleBindingAlerts *RESTNvAlertGroup `json:"clusterrolebinding_alerts,omitempty"`
+	RoleAlerts               *RESTNvAlertGroup `json:"role_alerts,omitempty"`
+	RoleBindingAlerts        *RESTNvAlertGroup `json:"rolebinding_alerts,omitempty"`
+	NvCrdSchemaAlerts        *RESTNvAlertGroup `json:"neuvector_crd_alerts,omitempty"`
+	CertificateAlerts        *RESTNvAlertGroup `json:"certificate_alerts,omitempty"`
+	OtherAlerts              *RESTNvAlertGroup `json:"other_alerts,omitempty"`
+}
+
+type AlertType string
+
+const (
+	AlertTypeRBAC           AlertType = "RBAC"
+	AlertTypeTlsCertificate AlertType = "TLS_CERTIFICATE"
+)
+
+type RESTNvAlertGroup struct {
+	Type AlertType      `json:"type"`
+	Data []*RESTNvAlert `json:"data,omitempty"`
+}
+
+type RESTNvAlert struct {
+	ID       string `json:"id"`      // ID is md5 of the English message
+	Message  string `json:"message"`
+}
+
 type RESTAcceptedAlerts struct {
 	ManagerAlerts    []string `json:"manager_alerts"`    // message key slice of manager-generated alerts
 	ControllerAlerts []string `json:"controller_alerts"` // message key slice of controller-generated alerts
@@ -231,9 +266,9 @@ type RESTAcceptedAlerts struct {
 
 // telemetry
 type RESTUpgradeInfo struct {
-	Version     string // must be in semantic versioning, like v5.0.0
-	ReleaseDate string
-	Tag         string
+	Version     string `json:"version"` // must be in semantic versioning, like v5.0.0
+	ReleaseDate string `json:"release_date"`
+	Tag         string `json:"tag"`
 }
 
 type RESTCheckUpgradeInfo struct {

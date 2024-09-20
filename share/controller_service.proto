@@ -46,6 +46,11 @@ message ScannerDeregisterData {
 
 message ControllerCaps {
     bool CriticalVul = 1;
+    bool ScannerSettings = 2;
+}
+
+message ScannerAvailable {
+    bool Visible = 1;
 }
 
 service ControllerScanService {
@@ -54,6 +59,8 @@ service ControllerScanService {
   rpc ScannerDeregister(ScannerDeregisterData) returns (RPCVoid);
   rpc SubmitScanResult(ScanResult) returns (RPCVoid);
   rpc GetCaps(RPCVoid) returns (ControllerCaps);
+  rpc HealthCheck(ScannerRegisterData) returns (ScannerAvailable);
+  rpc GetScannerSettings(RPCVoid) returns (ScannerSettings);
 }
 
 message CLUSFilePacket {
@@ -141,6 +148,7 @@ message CLUSConnection {
 	uint32 EpSessIn12 = 35;
 	uint64 EpByteIn12 = 36;
 	bool Nbe = 37;
+	bool NbeSns = 38;
 }
 
 message CLUSConnectionArray {

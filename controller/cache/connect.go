@@ -687,7 +687,9 @@ func calGrpMet(lgrpname, epWL string, cache *workloadCache, grpcache *groupCache
 func isCalGrpMet(grpcache *groupCache) bool {
 	if  grpcache.group.MonMetric && (grpcache.group.GrpSessCur > 0 || grpcache.group.GrpSessRate > 0 ||
 		grpcache.group.GrpBandWidth > 0) && (grpcache.group.CfgType == share.Learned ||
-		grpcache.group.CfgType == share.UserCreated) &&	!grpcache.group.Reserved {
+		grpcache.group.CfgType == share.UserCreated || 	grpcache.group.CfgType == share.GroundCfg ||
+		grpcache.group.CfgType == share.FederalCfg) &&	grpcache.group.Kind == share.GroupKindContainer &&
+		!grpcache.group.Reserved {
 		return true
 	}
 	return false
@@ -792,6 +794,7 @@ func UpdateConnections(conns []*share.CLUSConnection) {
 			"linkLocal":      conn.LinkLocal,
 			"fqdn":           conn.FQDN,
 			"nbe":            conn.Nbe,
+			"nbesns":         conn.NbeSns,
 			"EpSessCurIn":    conn.EpSessCurIn,
 			"EpSessIn12":     conn.EpSessIn12,
 			"EpByteIn12":     conn.EpByteIn12,
@@ -935,7 +938,7 @@ func connectFromGlobal(conn *share.CLUSConnection, ca *nodeAttr, stip *serverTip
 			stip.wlPort = uint16(conn.ServerPort)
 			ca.workload = true
 			return true
-		} else if conn.Nbe {
+		} else if conn.Nbe || conn.NbeSns{
 			if alive {
 				conn.ClientWL = wl
 				stip.wlPort = uint16(conn.ServerPort)

@@ -3,6 +3,7 @@ package scan
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"sort"
@@ -48,11 +49,13 @@ type pollContext struct {
 
 // This structure is derived from image summary and scan report. Mostly used for admisssion control
 type imageInfoCache struct {
+	criticalVuls                   int
 	highVuls                       int
 	medVuls                        int
+	criticalVulsWithFix            int
 	highVulsWithFix                int
 	vulScore                       float32
-	vulInfo                        map[string]map[string]share.CLUSScannedVulInfo // 1st key is "high"/"medium". 2nd key is "{vul_name}::{package_name}"
+	vulInfo                        map[string]map[string]share.CLUSScannedVulInfo // 1st key is "critical/high"/"medium". 2nd key is "{vul_name}::{package_name}"
 	lowVulInfo                     []share.CLUSScannedVulInfoSimple
 	layers                         []string
 	envs                           []string
@@ -173,6 +176,7 @@ func registryInit() {
 		regMap[config.Name] = newRegistry(config)
 		regUnlock()
 	}
+	db.SetGetCVECountFunc(GetImageCVECount)
 }
 
 func becomeScanner() {
@@ -364,6 +368,13 @@ func RegistryConfigHandler(nType cluster.ClusterNotifyType, key string, value []
 		}
 
 	case cluster.ClusterNotifyDelete:
+		if config, _, _ := clusHelper.GetRegistry(name, access.NewFedAdminAccessControl()); config != nil {
+			// after kv data is unexpectedly wiped out, Restore() could be triggered very fast that RegistryConfigHandler(type=delete) is called after Restore() is done.
+			// in this case, do not really delete the restored registry & its scan data
+			smd.scanLog.WithFields(log.Fields{"registry": name}).Info("skip delete because it Still exists in kv")
+			return
+		}
+
 		// when managed cluster is notified that a fed registry kv key is deleted, simply remove that fed registry entry from regMap
 		regLock()
 		reg, ok := regMap[name]
@@ -434,7 +445,7 @@ func RegistryStateUpdate(name string, state *share.CLUSRegistryState) {
 }
 
 func RegistryImageStateUpdate(name, id string, sum *share.CLUSRegistryImageSummary, calculateLayers bool, vpf scanUtils.VPFInterface) (
-	utils.Set, []string, []string, []scanUtils.FixedVulInfo, map[string][]string, map[string][]string) {
+	utils.Set, []string, []string, []string, []scanUtils.FixedVulInfo, []scanUtils.FixedVulInfo, map[string][]string, map[string][]string, map[string][]string) {
 
 	smd.scanLog.WithFields(log.Fields{"registry": name, "id": id}).Debug()
 
@@ -446,15 +457,17 @@ func RegistryImageStateUpdate(name, id string, sum *share.CLUSRegistryImageSumma
 	} else if name == common.RegistryFedRepoScanName {
 		rs = repoFedScanRegistry
 	} else if rs, _ = regMapLookup(name); rs == nil {
-		return nil, nil, nil, nil, nil, nil
+		return nil, nil, nil, nil, nil, nil, nil, nil, nil
 	}
 
 	var c *imageInfoCache
-	var highs, meds, lows []string
+	var criticals, highs, meds, lows []string
 	var alives utils.Set // vul names that are not filtered
+	layerCriticalMap := make(map[string][]string, 0)
 	layerHighMap := make(map[string][]string, 0)
 	layerMedMap := make(map[string][]string, 0)
-	fixedHighsInfo := make([]scanUtils.FixedVulInfo, 0) // fixed high vul info
+	fixedCriticalsInfo := make([]scanUtils.FixedVulInfo, 0) // fixed critical vul info
+	fixedHighsInfo := make([]scanUtils.FixedVulInfo, 0)     // fixed high vul info
 
 	if sum != nil && sum.Status == api.ScanStatusFinished {
 		key := share.CLUSRegistryImageDataKey(name, id)
@@ -473,7 +486,15 @@ func RegistryImageStateUpdate(name, id string, sum *share.CLUSRegistryImageSumma
 				}
 			}
 
-			highs, meds, lows, c.highVulsWithFix, c.vulScore, c.vulInfo, c.lowVulInfo = countVuln(report.Vuls, localVulTraits, alives)
+			criticals, highs, meds, lows, c.criticalVulsWithFix, c.highVulsWithFix, c.vulScore, c.vulInfo, c.lowVulInfo = countVuln(report.Vuls, localVulTraits, alives)
+			if info, ok := c.vulInfo[share.VulnSeverityCritical]; ok {
+				fixedCriticalsInfo = make([]scanUtils.FixedVulInfo, 0, len(info))
+				for _, v := range info {
+					// ks is in format "{vul name}::{package name}"
+					fixedCriticalsInfo = append(fixedCriticalsInfo, scanUtils.FixedVulInfo{PubTS: v.PublishDate})
+				}
+			}
+
 			if info, ok := c.vulInfo[share.VulnSeverityHigh]; ok {
 				fixedHighsInfo = make([]scanUtils.FixedVulInfo, 0, len(info))
 				for _, v := range info {
@@ -481,6 +502,7 @@ func RegistryImageStateUpdate(name, id string, sum *share.CLUSRegistryImageSumma
 					fixedHighsInfo = append(fixedHighsInfo, scanUtils.FixedVulInfo{PubTS: v.PublishDate})
 				}
 			}
+			c.criticalVuls = len(criticals)
 			c.highVuls = len(highs)
 			c.medVuls = len(meds)
 			c.envs = report.Envs
@@ -501,6 +523,7 @@ func RegistryImageStateUpdate(name, id string, sum *share.CLUSRegistryImageSumma
 
 				if calculateLayers {
 					// calculate highs and meds in layers
+					layerCriticals := make([]string, 0)
 					layerHighs := make([]string, 0)
 					layerMeds := make([]string, 0)
 					var layerAlives utils.Set // vul names that are not filtered
@@ -519,19 +542,22 @@ func RegistryImageStateUpdate(name, id string, sum *share.CLUSRegistryImageSumma
 							continue
 						}
 
-						if v.Severity == share.VulnSeverityHigh {
+						if v.Severity == share.VulnSeverityCritical {
+							layerCriticals = append(layerCriticals, v.Name)
+						} else if v.Severity == share.VulnSeverityHigh {
 							layerHighs = append(layerHighs, v.Name)
 						} else if v.Severity == share.VulnSeverityMedium {
 							layerMeds = append(layerMeds, v.Name)
 						}
 					}
 
+					layerCriticalMap[l.Digest] = layerCriticals
 					layerHighMap[l.Digest] = layerHighs
 					layerMedMap[l.Digest] = layerMeds
 				}
 			}
 
-			dbAssetVul := getImageDbAssetVul(c, sum, highs, meds, lows)
+			dbAssetVul := getImageDbAssetVul(c, sum, lows)
 			dbAssetVul.Vuls = report.Vuls
 			dbAssetVul.Modules = report.Modules
 
@@ -540,7 +566,10 @@ func RegistryImageStateUpdate(name, id string, sum *share.CLUSRegistryImageSumma
 				dbAssetVul.Idns = string(b)
 			}
 
-			db.PopulateAssetVul(dbAssetVul)
+			err = db.PopulateAssetVul(dbAssetVul)
+			if err != nil {
+				log.WithError(err).Error("Failed to poulate asset to db")
+			}
 			report.Vuls = nil
 			report.Modules = nil
 		}
@@ -576,7 +605,7 @@ func RegistryImageStateUpdate(name, id string, sum *share.CLUSRegistryImageSumma
 		delete(rs.cache, id)
 	}
 
-	return alives, highs, meds, fixedHighsInfo, layerHighMap, layerMedMap
+	return alives, criticals, highs, meds, fixedCriticalsInfo, fixedHighsInfo, layerCriticalMap, layerHighMap, layerMedMap
 }
 
 func RegistryScanCacheRefresh(ctx context.Context, vpf scanUtils.VPFInterface) {
@@ -1893,16 +1922,47 @@ func IsRegistryImageScanned(id string) bool {
 	return scanned
 }
 
-func getImageDbAssetVul(c *imageInfoCache, sum *share.CLUSRegistryImageSummary, highs, meds, lows []string) *db.DbAssetVul {
+func getImageDbAssetVul(c *imageInfoCache, sum *share.CLUSRegistryImageSummary, lows []string) *db.DbAssetVul {
+	b, err := json.Marshal(sum.Images)
+	if err != nil {
+		b = []byte("[]")
+	}
+
 	d := &db.DbAssetVul{
-		Type:       db.AssetImage,
-		AssetID:    sum.ImageID,
-		CVE_high:   c.highVuls,
-		CVE_medium: c.medVuls,
-		CVE_low:    len(lows),
+		Type:              db.AssetImage,
+		AssetID:           sum.ImageID,
+		CVE_critical:      c.criticalVuls,
+		CVE_high:          c.highVuls,
+		CVE_medium:        c.medVuls,
+		CVE_low:           len(lows),
+		I_created_at:      sum.CreatedAt.Format("2006-01-02T15:04:05Z"),
+		I_scanned_at:      sum.ScannedAt.Format("2006-01-02T15:04:05Z"),
+		I_digest:          sum.Digest,
+		I_base_os:         sum.BaseOS,
+		I_repository_name: sum.RegName,
+		I_repository_url:  sum.Registry,
+		I_size:            sum.Size,
+		I_images:          string(b),
 	}
 	if len(sum.Images) > 0 {
 		d.Name = fmt.Sprintf("%s:%s", sum.Images[0].Repo, sum.Images[0].Tag)
 	}
 	return d
+}
+
+func GetImageCVECount(name, id string) (int, int, int, error) {
+	var rs *Registry
+	if name == common.RegistryRepoScanName {
+		rs = repoScanRegistry
+	} else if name == common.RegistryFedRepoScanName {
+		rs = repoFedScanRegistry
+	} else if rs, _ = regMapLookup(name); rs == nil {
+		return 0, 0, 0, errors.New("registry not found")
+	}
+
+	if c, ok := rs.cache[id]; ok {
+		return c.criticalVuls, c.highVuls, c.medVuls, nil
+	}
+
+	return 0, 0, 0, errors.New("id not found")
 }

@@ -13,6 +13,7 @@ const RESTMaskedValue string = "The value is masked"
 const RESTAPIKeyHeader string = "X-Auth-Apikey"
 
 const RESTNvPageDashboard string = "dashboard"
+const RESTNvPageNavigationBar string = "navbar"
 
 // Don't modify value or reorder
 const RESTErrNotFound int = 1
@@ -382,6 +383,7 @@ type RESTServerOIDC struct {
 	DefaultRole      string                    `json:"default_role"`
 	RoleGroups       map[string][]string       `json:"role_groups,omitempty"`        // role -> groups
 	GroupMappedRoles []*share.GroupRoleMapping `json:"group_mapped_roles,omitempty"` // group -> (role -> domains)
+	UseProxy         bool                      `json:"use_proxy,omitempty"`
 }
 
 type RESTServer struct {
@@ -465,6 +467,7 @@ type RESTServerOIDCConfig struct {
 	DefaultRole      *string                    `json:"default_role"`
 	RoleGroups       *map[string][]string       `json:"role_groups,omitempty"`        // role -> groups. deprecated since 4.2
 	GroupMappedRoles *[]*share.GroupRoleMapping `json:"group_mapped_roles,omitempty"` // group -> (role -> domains)
+	UseProxy         *bool                      `json:"use_proxy"`
 }
 
 type RESTServerOIDCConfigCfgMap struct {
@@ -613,7 +616,8 @@ type RESTSelfUserData struct {
 	PwdDaysUntilExpire  int                              `json:"password_days_until_expire"`  // negative means password never expires
 	PwdHoursUntilExpire int                              `json:"password_hours_until_expire"` // the hours part beyond PwdDaysUntilExpire, 0 ~ 23
 	GlobalPermits       []*RESTRolePermission            `json:"global_permissions,omitempty"`
-	DomainPermits       map[string][]*RESTRolePermission `json:"domain_permissions,omitempty"` // domain -> permissions
+	DomainPermits       map[string][]*RESTRolePermission `json:"domain_permissions,omitempty"`        // domain -> permissions
+	RemoteGlobalPermits []*RESTRolePermission            `json:"remote_global_permissions,omitempty"` // for accessing managed clusters on primary cluster's UI
 }
 
 type RESTUserConfigData struct {
@@ -838,6 +842,7 @@ type RESTController struct {
 	DisconnAt         string            `json:"disconnected_at"`
 	OrchConnStatus    string            `json:"orch_conn_status"`
 	OrchConnLastError string            `json:"orch_conn_last_error"`
+	ReadPrimeConfig   bool              `json:"read_prime_config"`
 }
 
 type RESTControllersData struct {
@@ -1247,6 +1252,10 @@ type RESTCrdGroupConfig struct {
 	Name         string               `json:"name"`
 	Comment      string               `json:"comment"`
 	Criteria     *[]RESTCriteriaEntry `json:"criteria,omitempty"`
+	MonMetric    *bool                `json:"mon_metric,omitempty"`
+	GrpSessCur   *uint32              `json:"grp_sess_cur,omitempty"`
+	GrpSessRate  *uint32              `json:"grp_sess_rate,omitempty"`
+	GrpBandWidth *uint32              `json:"grp_band_width,omitempty"`
 }
 
 type RESTGroupsData struct {
@@ -1460,6 +1469,7 @@ type RESTAgentConfig struct {
 	Debug            *[]string `json:"debug,omitempty"`
 	DisableNvProtect *bool     `json:"disable_nvprotect,omitempty"`
 	DisableKvCCtl    *bool     `json:"disable_kvcctl,omitempty"`
+	LogLevel         *string   `json:"log_level,omitempty"`
 }
 
 type RESTAgentConfigData struct {
@@ -1479,7 +1489,8 @@ type RESTControllerCounterData struct {
 }
 
 type RESTControllerConfig struct {
-	Debug *[]string `json:"debug,omitempty"`
+	Debug    *[]string `json:"debug,omitempty"`
+	LogLevel *string   `json:"log_level,omitempty"`
 }
 
 type RESTControllerConfigData struct {
@@ -1722,6 +1733,7 @@ const (
 
 type RESTSystemConfigConfig struct {
 	NewServicePolicyMode      *string                          `json:"new_service_policy_mode,omitempty"`
+	NewServiceProfileMode     *string                          `json:"new_service_profile_mode,omitempty"`
 	NewServiceProfileBaseline *string                          `json:"new_service_profile_baseline,omitempty"`
 	UnusedGroupAging          *uint8                           `json:"unused_group_aging,omitempty"`
 	SyslogServer              *string                          `json:"syslog_ip,omitempty"`
@@ -1748,12 +1760,16 @@ type RESTSystemConfigConfig struct {
 	RegistryHttpsProxyEnable  *bool                            `json:"registry_https_proxy_status,omitempty"`
 	RegistryHttpProxy         *RESTProxy                       `json:"registry_http_proxy,omitempty"`
 	RegistryHttpsProxy        *RESTProxy                       `json:"registry_https_proxy,omitempty"`
+	RegistryHttpProxyCfg      *RESTProxyConfig                 `json:"registry_http_proxy_cfg,omitempty"`
+	RegistryHttpsProxyCfg     *RESTProxyConfig                 `json:"registry_https_proxy_cfg,omitempty"`
 	IBMSAEpEnabled            *bool                            `json:"ibmsa_ep_enabled,omitempty"`
 	IBMSAEpDashboardURL       *string                          `json:"ibmsa_ep_dashboard_url,omitempty"`
 	XffEnabled                *bool                            `json:"xff_enabled,omitempty"`
 	ScannerAutoscale          *RESTSystemConfigAutoscaleConfig `json:"scanner_autoscale,omitempty"`
 	NoTelemetryReport         *bool                            `json:"no_telemetry_report,omitempty"`
 	RemoteRepositories        *[]RESTRemoteRepository          `json:"remote_repositories,omitempty"`
+	EnableTLSVerification     *bool                            `json:"enable_tls_verification,omitempty"`
+	GlobalCaCerts             *[]string                        `json:"cacerts,omitempty"`
 	// InternalSubnets      *[]string `json:"configured_internal_subnets,omitempty"`
 }
 
@@ -1795,6 +1811,7 @@ type RESTSystemConfigConfigData struct {
 
 type RESTSystemConfigSvcCfgV2 struct {
 	NewServicePolicyMode      *string `json:"new_service_policy_mode,omitempty"`
+	NewServiceProfileMode     *string `json:"new_service_profile_mode,omitempty"`
 	NewServiceProfileBaseline *string `json:"new_service_profile_baseline,omitempty"`
 }
 
@@ -1819,10 +1836,17 @@ type RESTSystemConfigAuthCfgV2 struct {
 }
 
 type RESTSystemConfigProxyCfgV2 struct {
-	RegistryHttpProxyEnable  *bool      `json:"registry_http_proxy_status,omitempty"`
-	RegistryHttpsProxyEnable *bool      `json:"registry_https_proxy_status,omitempty"`
-	RegistryHttpProxy        *RESTProxy `json:"registry_http_proxy,omitempty"`
-	RegistryHttpsProxy       *RESTProxy `json:"registry_https_proxy,omitempty"`
+	RegistryHttpProxyEnable  *bool            `json:"registry_http_proxy_status,omitempty"`
+	RegistryHttpsProxyEnable *bool            `json:"registry_https_proxy_status,omitempty"`
+	RegistryHttpProxy        *RESTProxy       `json:"registry_http_proxy,omitempty"`
+	RegistryHttpsProxy       *RESTProxy       `json:"registry_https_proxy,omitempty"`
+	RegistryHttpProxyCfg     *RESTProxyConfig `json:"registry_http_proxy_cfg,omitempty"`
+	RegistryHttpsProxyCfg    *RESTProxyConfig `json:"registry_https_proxy_cfg,omitempty"`
+}
+
+type RESTSystemConfigTlsCfg struct {
+	EnableTLSVerification *bool     `json:"enable_tls_verification"`
+	GlobalCaCerts         *[]string `json:"cacerts"`
 }
 
 type RESTSystemConfigMiscCfgV2 struct {
@@ -1845,6 +1869,7 @@ type RESTSystemConfigConfigV2 struct {
 	SyslogCfg          *RESTSystemConfigSyslogCfgV2     `json:"syslog_cfg,omitempty"`
 	AuthCfg            *RESTSystemConfigAuthCfgV2       `json:"auth_cfg,omitempty"`
 	ProxyCfg           *RESTSystemConfigProxyCfgV2      `json:"proxy_cfg,omitempty"`
+	TlsCfg             *RESTSystemConfigTlsCfg          `json:"tls_cfg,omitempty"`
 	Webhooks           *[]*RESTWebhook                  `json:"webhooks,omitempty"`
 	IbmsaCfg           *RESTSystemConfigIBMSAVCfg2      `json:"ibmsa_cfg,omitempty"`
 	ScannerAutoscale   *RESTSystemConfigAutoscaleConfig `json:"scanner_autoscale_cfg,omitempty"`
@@ -1859,6 +1884,7 @@ type RESTUnquarReq struct {
 
 type RESTSystemRequest struct {
 	PolicyMode      *string        `json:"policy_mode,omitempty"`
+	ProfileMode     *string        `json:"profile_mode,omitempty"`
 	BaselineProfile *string        `json:"baseline_profile,omitempty"`
 	Unquar          *RESTUnquarReq `json:"unquarantine,omitempty"`
 }
@@ -1867,9 +1893,16 @@ type RESTSystemRequestData struct {
 	Request *RESTSystemRequest `json:"request"`
 }
 
+type RESTProxyConfig struct {
+	URL      *string `json:"url"`
+	Username *string `json:"username"`
+	Password *string `json:"password,cloak"`
+}
+
 // If more log servers needed, they can be defined as servers.
 type RESTSystemConfig struct {
 	NewServicePolicyMode      string                    `json:"new_service_policy_mode"`
+	NewServiceProfileMode     string                    `json:"new_service_profile_mode"`
 	NewServiceProfileBaseline string                    `json:"new_service_profile_baseline"`
 	UnusedGroupAging          uint8                     `json:"unused_group_aging"`
 	SyslogServer              string                    `json:"syslog_ip"`
@@ -1912,6 +1945,8 @@ type RESTSystemConfig struct {
 	NoTelemetryReport         bool                      `json:"no_telemetry_report"`
 	CspType                   string                    `json:"csp_type"`
 	RemoteRepositories        []RESTRemoteRepository    `json:"remote_repositories"`
+	EnableTLSVerification     bool                      `json:"enable_tls_verification"`
+	GlobalCaCerts             []string                  `json:"cacerts"`
 }
 
 type RESTSystemConfigData struct {
@@ -1921,6 +1956,7 @@ type RESTSystemConfigData struct {
 
 type RESTSystemConfigNewSvcV2 struct {
 	NewServicePolicyMode      string `json:"new_service_policy_mode"`
+	NewServiceProfileMode     string `json:"new_service_profile_mode"`
 	NewServiceProfileBaseline string `json:"new_service_profile_baseline"`
 }
 
@@ -1970,10 +2006,12 @@ type RESTSystemConfigAutoscale struct {
 }
 
 type RESTSystemConfigProxyV2 struct {
-	RegistryHttpProxyEnable  bool      `json:"registry_http_proxy_status"`
-	RegistryHttpsProxyEnable bool      `json:"registry_https_proxy_status"`
-	RegistryHttpProxy        RESTProxy `json:"registry_http_proxy"`
-	RegistryHttpsProxy       RESTProxy `json:"registry_https_proxy"`
+	RegistryHttpProxyEnable  bool            `json:"registry_http_proxy_status"`
+	RegistryHttpsProxyEnable bool            `json:"registry_https_proxy_status"`
+	RegistryHttpProxy        RESTProxy       `json:"registry_http_proxy"`
+	RegistryHttpsProxy       RESTProxy       `json:"registry_https_proxy"`
+	RegistryHttpProxyCfg     RESTProxyConfig `json:"registry_http_proxy_cfg"`
+	RegistryHttpsProxyCfg    RESTProxyConfig `json:"registry_https_proxy_cfg"`
 }
 
 type RESTSystemConfigIBMSAV2 struct {
@@ -1997,6 +2035,11 @@ type RESTSystemConfigModeAutoV2 struct {
 	ModeAutoM2PDuration int64 `json:"mode_auto_m2p_duration"`
 }
 
+type RESTSystemConfigTls struct {
+	EnableTLSVerification bool     `json:"enable_tls_verification"`
+	GlobalCaCerts         []string `json:"cacerts"`
+}
+
 type RESTSystemConfigV2 struct {
 	NewSvc             RESTSystemConfigNewSvcV2   `json:"new_svc"`
 	Syslog             RESTSystemConfigSyslogV2   `json:"syslog"`
@@ -2009,6 +2052,7 @@ type RESTSystemConfigV2 struct {
 	ModeAuto           RESTSystemConfigModeAutoV2 `json:"mode_auto"`
 	ScannerAutoscale   RESTSystemConfigAutoscale  `json:"scanner_autoscale"`
 	RemoteRepositories []RESTRemoteRepository     `json:"remote_repositories"`
+	TlsCfg             RESTSystemConfigTls        `json:"tls_cfg"`
 }
 
 type RESTIBMSAConfig struct {
@@ -2050,6 +2094,7 @@ type RESTServiceConfig struct {
 	Domain          string  `json:"domain"`
 	Comment         *string `json:"comment"`
 	PolicyMode      *string `json:"policy_mode,omitempty"`
+	ProfileMode     *string `json:"profile_mode,omitempty"`
 	BaselineProfile *string `json:"baseline_profile,omitempty"`
 	NotScored       *bool   `json:"not_scored,omitempty"`
 }
@@ -2087,6 +2132,7 @@ type RESTServiceData struct {
 type RESTServiceBatchConfig struct {
 	Services        []string `json:"services,omitempty"`
 	PolicyMode      *string  `json:"policy_mode,omitempty"`
+	ProfileMode     *string  `json:"profile_mode,omitempty"`
 	BaselineProfile *string  `json:"baseline_profile,omitempty"`
 	NotScored       *bool    `json:"not_scored,omitempty"`
 }
@@ -2168,6 +2214,7 @@ const ScanStatusUnsupported string = "unsupported"
 
 type RESTScanBrief struct {
 	Status           string `json:"status"`
+	CriticalVuls     int    `json:"critical"`
 	HighVuls         int    `json:"high"`
 	MedVuls          int    `json:"medium"`
 	Result           string `json:"result"`
@@ -2176,6 +2223,10 @@ type RESTScanBrief struct {
 	BaseOS           string `json:"base_os"`
 	CVEDBVersion     string `json:"scanner_version"`
 	CVEDBCreateTime  string `json:"cvedb_create_time"`
+}
+
+func (sb *RESTScanBrief) CVECount() int {
+	return sb.CriticalVuls + sb.HighVuls + sb.MedVuls
 }
 
 type RESTScanPlatformSummary struct {
@@ -2315,33 +2366,30 @@ type RESTVulnerabilityAssetDataV2 struct {
 }
 
 type RESTWorkloadAsset struct {
-	ID          string   `json:"id"`
-	Domains     []string `json:"domains,omitempty"`
-	DisplayName string   `json:"display_name"`
-	PolicyMode  string   `json:"policy_mode"`
-	Service     string   `json:"service"`
-	Image       string   `json:"image"`
+	ID          string `json:"id"`
+	Domain      string `json:"domain"`
+	DisplayName string `json:"display_name"`
+	PolicyMode  string `json:"policy_mode"`
+	Service     string `json:"service"`
+	Image       string `json:"image"`
 }
 
 type RESTHostAsset struct {
-	ID          string   `json:"id"`
-	Domains     []string `json:"domains"`
-	DisplayName string   `json:"display_name"`
-	PolicyMode  string   `json:"policy_mode"`
+	ID          string `json:"id"`
+	DisplayName string `json:"display_name"`
+	PolicyMode  string `json:"policy_mode"`
 }
 
 type RESTPlatformAsset struct {
-	ID          string   `json:"id"`
-	Domains     []string `json:"domains"`
-	DisplayName string   `json:"display_name"`
-	PolicyMode  string   `json:"policy_mode"`
+	ID          string `json:"id"`
+	DisplayName string `json:"display_name"`
+	PolicyMode  string `json:"policy_mode"`
 }
 
 type RESTImageAsset struct {
-	ID          string   `json:"id"`
-	Domains     []string `json:"domains"`
-	DisplayName string   `json:"display_name"`
-	PolicyMode  string   `json:"policy_mode"`
+	ID          string `json:"id"`
+	DisplayName string `json:"display_name"`
+	PolicyMode  string `json:"policy_mode"`
 }
 
 type RESTScanReportData struct {
@@ -2581,22 +2629,21 @@ type RESTWorkloadInterceptData struct {
 	Intercept *RESTWorkloadIntercept `json:"intercept"`
 }
 
-type TagDetail struct {
-	ID          string `yaml:"id" json:"id"`
-	Title       string `yaml:"title" json:"title"`
-	Description string `yaml:"description" json:"description"`
+type RESTAvaiableComplianceFilter struct {
+	AvailableFilter []string `json:"available_filter"`
 }
 
 type RESTBenchCheck struct {
-	TestNum     string                   `json:"test_number"`
-	Category    string                   `json:"category"`
-	Type        string                   `json:"type"`
-	Profile     string                   `json:"profile"`
-	Scored      bool                     `json:"scored"`
-	Automated   bool                     `json:"automated"`
-	Description string                   `json:"description"`
-	Remediation string                   `json:"remediation"`
-	Tags        []map[string][]TagDetail `json:"tags,omitempty"`
+	TestNum     string                      `json:"test_number"`
+	Category    string                      `json:"category"`
+	Type        string                      `json:"type"`
+	Profile     string                      `json:"profile"`
+	Scored      bool                        `json:"scored"`
+	Automated   bool                        `json:"automated"`
+	Description string                      `json:"description"`
+	Remediation string                      `json:"remediation"`
+	Tags        []string                    `json:"tags,omitempty"`    // Tags provide list of compliance that related to the cis test item.
+	TagsV2      map[string]share.TagDetails `json:"tags_v2,omitempty"` // TagsV2 provide compliance details for each compliance tag
 }
 
 type RESTBenchMeta struct {
@@ -2628,21 +2675,21 @@ type RESTComplianceData struct {
 }
 
 type RESTComplianceAsset struct {
-	Name        string                   `json:"name"`
-	Category    string                   `json:"category"`
-	Type        string                   `json:"type"`
-	Level       string                   `json:"level"`
-	Profile     string                   `json:"profile"`
-	Scored      bool                     `json:"scored"`
-	Description string                   `json:"description"`
-	Message     []string                 `json:"message"`
-	Remediation string                   `json:"remediation"`
-	Group       string                   `json:"group"`
-	Tags        []map[string][]TagDetail `json:"tags,omitempty"`
-	Workloads   []string                 `json:"workloads"`
-	Nodes       []string                 `json:"nodes"`
-	Images      []string                 `json:"images"`
-	Platforms   []string                 `json:"platforms"`
+	Name        string                      `json:"name"`
+	Category    string                      `json:"category"`
+	Type        string                      `json:"type"`
+	Level       string                      `json:"level"`
+	Profile     string                      `json:"profile"`
+	Scored      bool                        `json:"scored"`
+	Description string                      `json:"description"`
+	Message     []string                    `json:"message"`
+	Remediation string                      `json:"remediation"`
+	Group       string                      `json:"group"`
+	Tags        map[string]share.TagDetails `json:"tags"`
+	Workloads   []string                    `json:"workloads"`
+	Nodes       []string                    `json:"nodes"`
+	Images      []string                    `json:"images"`
+	Platforms   []string                    `json:"platforms"`
 }
 
 type RESTComplianceAssetData struct {
@@ -2661,6 +2708,8 @@ const (
 	ComplianceTemplateGDPR  = "GDPR"
 	ComplianceTemplateHIPAA = "HIPAA"
 	ComplianceTemplateNIST  = "NIST" // NIST SP 800-190
+	ComplianceTemplatePCIv4 = "PCIv4"
+	ComplianceTemplateDISA  = "DISA"
 )
 
 type RESTComplianceProfileEntry struct {
@@ -3947,6 +3996,13 @@ type VulQueryFilterViewModel struct {
 	DebugCVEName     string `json:"debugcve"`
 }
 
+type AssetQueryFilterViewModel struct {
+	Type          string `json:"type"`
+	QuickFilter   string `json:"quickFilter"`
+	OrderByColumn string `json:"orderbyColumn"`
+	OrderByType   string `json:"orderby"`
+}
+
 type UserAccessControl struct {
 	LoginName           string
 	LoginID             string
@@ -3961,10 +4017,12 @@ type UserAccessControl struct {
 }
 
 type QuerySessionRequest struct {
+	Type         int // 0=vul, 1=asset
 	QueryToken   string
 	CreationTime int64
 	UserAccess   *UserAccessControl
 	Filters      *VulQueryFilterViewModel
+	FiltersAsset *AssetQueryFilterViewModel
 }
 
 type RESTAssetView struct {
@@ -3973,13 +4031,14 @@ type RESTAssetView struct {
 	Platforms []*RESTPlatformAssetView    `json:"platforms"`
 	Images    []*RESTImageAssetView       `json:"images"`
 	Vuls      []*RESTVulnerabilityAssetV2 `json:"vulnerabilities"`
-	QueryStat *RESTScanAssetQueryStats    `json:"summary"`
+	QueryStat *RESTVulQueryStats          `json:"summary"`
 }
 
 type RESTWorkloadAssetView struct {
 	ID              string   `json:"id"`
 	Name            string   `json:"name"`
 	Domain          string   `json:"domain"`
+	Image           string   `json:"image"`
 	Applications    []string `json:"applications"`
 	PolicyMode      string   `json:"policy_mode"`
 	ServiceGroup    string   `json:"service_group"`
@@ -4026,12 +4085,40 @@ type RESTImageAssetView struct {
 	Vulnerabilities []string `json:"vulnerabilities"`
 }
 
-type RESTScanAssetQueryStats struct {
+type RESTImageAssetViewV2 struct {
+	ID        string `json:"image_id"`
+	Name      string `json:"repository"`
+	Critical  int    `json:"critical,omitempty"`
+	High      int    `json:"high"`
+	Medium    int    `json:"medium"`
+	CreatedAt string `json:"created_at"`
+	ScannedAt string `json:"scanned_at"`
+	Digest    string `json:"digest"`
+	BaseOS    string `json:"base_os"`
+	RegName   string `json:"reg_name"`
+	Registry  string `json:"repo_url"`
+	Size      int    `json:"size"`
+	Tag       string `json:"tag"`
+}
+
+type RESTVulQueryStats struct {
 	TotalRecordCount        int                     `json:"total_records"`
 	TotalMatchedRecordCount int                     `json:"total_matched_records"`
 	QueryToken              string                  `json:"query_token"`
 	PerfStats               []string                `json:"debug_perf_stats"`
 	Summary                 *VulAssetSessionSummary `json:"summary"`
+}
+
+// for asset pagination
+type RESTAssetQueryStats struct {
+	TotalRecordCount int                  `json:"total_records"`
+	QueryToken       string               `json:"query_token"`
+	PerfStats        []string             `json:"debug_perf_stats"`
+	Summary          *AssetSessionSummary `json:"summary"`
+}
+
+type AssetSessionSummary struct {
+	TopImages []*AssetCVECount `json:"top_images"`
 }
 
 type VulAssetSessionSummary struct {
@@ -4041,6 +4128,7 @@ type VulAssetSessionSummary struct {
 }
 
 type VulAssetCountDist struct {
+	Critical   int `json:"critical,omitempty"`
 	High       int `json:"high"`
 	Medium     int `json:"medium"`
 	Low        int `json:"low"`
@@ -4053,7 +4141,12 @@ type VulAssetCountDist struct {
 type AssetCVECount struct {
 	ID          string `json:"id"`
 	DisplayName string `json:"display_name"`
+	Critical    int    `json:"critical,omitempty"`
 	High        int    `json:"high"`
 	Medium      int    `json:"medium"`
 	Low         int    `json:"low"`
+}
+
+type RESTAssetIDList struct {
+	IDs []string `json:"ids"`
 }

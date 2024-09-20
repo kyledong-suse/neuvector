@@ -8,6 +8,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/neuvector/neuvector/share/k8sutils"
 	log "github.com/sirupsen/logrus"
 	"github.com/urfave/cli/v2"
 	batchv1 "k8s.io/api/batch/v1"
@@ -20,6 +21,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 	"k8s.io/utils/pointer"
 )
 
@@ -225,6 +228,10 @@ func CreatePostSyncJob(ctx context.Context, client dynamic.Interface, namespace 
 		newjob.Spec.Template.Spec.Containers[0].Command = append(newjob.Spec.Template.Spec.Containers[0].Command, "--fresh-install")
 	}
 
+	if os.Getenv("ENABLE_ROTATION") != "" {
+		newjob.Spec.Template.Spec.Containers[0].Command = append(newjob.Spec.Template.Spec.Containers[0].Command, "--enable-rotation")
+	}
+
 	unstructedJob, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&newjob)
 	if err != nil {
 		return nil, fmt.Errorf("failed to convert target job: %w", err)
@@ -293,6 +300,14 @@ func PreSyncHook(ctx *cli.Context) error {
 	secretName := ctx.String("internal-secret-name")
 	timeout := ctx.Duration("timeout")
 
+	log.Info("Getting running namespace")
+
+	if data, err := os.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/namespace"); err == nil {
+		namespace = string(data)
+	} else {
+		log.WithError(err).Warn("failed to open namespace file.")
+	}
+
 	log.WithFields(log.Fields{
 		"namespace":  namespace,
 		"kubeconfig": kubeconfig,
@@ -302,6 +317,35 @@ func PreSyncHook(ctx *cli.Context) error {
 	client, err := NewK8sClient(kubeconfig)
 	if err != nil {
 		return fmt.Errorf("failed to create k8s client: %w", err)
+	}
+
+	log.Info("Checking k8s permissions")
+
+	// Check if required permissions are there.
+	config, err := rest.InClusterConfig()
+	if err != nil {
+		return fmt.Errorf("failed to read in-cluster config: %w", err)
+	}
+
+	clientset, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		return fmt.Errorf("failed to get k8s config: %w", err)
+	}
+
+	for _, res := range k8sutils.UpgraderPresyncRequiredPermissions {
+		capable, err := k8sutils.CanI(clientset, res, namespace)
+		if err != nil {
+			return err
+		}
+		if !capable {
+			if os.Getenv("NO_FALLBACK") == "" {
+				log.Warn("required permission is missing...skip the certificate generation/rotation")
+				os.Exit(0)
+			} else {
+				log.Error("required permission is missing...ending now")
+				os.Exit(-2)
+			}
+		}
 	}
 
 	log.Info("Getting helm values check sum")
@@ -315,9 +359,7 @@ func PreSyncHook(ctx *cli.Context) error {
 	if secret, err = GetK8sSecret(timeoutCtx, client, namespace, secretName); err != nil {
 		// The secret is supposed to be created by helm.
 		// If the secret is not created yet, it can be automatically retried by returning error.
-		if err != nil {
-			return fmt.Errorf("failed to find source secret: %w", err)
-		}
+		return fmt.Errorf("failed to find source secret: %w", err)
 	}
 	secretUID := string(secret.UID)
 

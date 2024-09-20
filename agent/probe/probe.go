@@ -458,7 +458,7 @@ func (p *Probe) delayProcReportService() {
 	}
 }
 
-func New(pc *ProbeConfig) (*Probe, error) {
+func New(pc *ProbeConfig, logLevel string) (*Probe, error) {
 	log.Info()
 	p := &Probe{
 		bProfileEnable:       pc.ProfileEnable,
@@ -503,7 +503,7 @@ func New(pc *ProbeConfig) (*Probe, error) {
 
 	// for process
 	mLog.Out = os.Stdout
-	mLog.Level = log.InfoLevel
+	mLog.Level = share.CLUSGetLogLevel(logLevel)
 	mLog.Formatter = &utils.LogFormatter{Module: "AGT"}
 	if pc.EnableTrace {
 		mLog.SetLevel(log.DebugLevel)
@@ -694,10 +694,10 @@ func (p *Probe) ReportDockerCp(id, containerName string, toContainer bool) {
 }
 
 ///// by policy order
-func (p *Probe) addProcessControl(id, setting, svcGroup string, pid int, process []*share.CLUSProcessProfileEntry) {
+func (p *Probe) addProcessControl(id, setting, svcGroup string, pid int, ppe_list []*share.CLUSProcessProfileEntry) {
 	if p.fAccessCtl != nil {
-		for _, proc := range process {
-			mLog.WithFields(log.Fields{"name": proc.Name, "path": proc.Path, "action": proc.Action}).Debug("PROC:")
+		for _, ppe := range ppe_list {
+			mLog.WithFields(log.Fields{"name": ppe.Name, "path": ppe.Path, "action": ppe.Action}).Debug("PROC:")
 		}
 
 		if !osutil.IsPidValid(pid) {
@@ -705,7 +705,7 @@ func (p *Probe) addProcessControl(id, setting, svcGroup string, pid int, process
 			return
 		}
 
-		if !p.fAccessCtl.AddContainerControlByPolicyOrder(id, setting, svcGroup, pid, process) {
+		if !p.fAccessCtl.AddContainerControlByPolicyOrder(id, setting, svcGroup, pid, ppe_list) {
 			log.WithFields(log.Fields{"id": id, "pid": pid}).Debug("PROC: failed")
 		}
 	} else {

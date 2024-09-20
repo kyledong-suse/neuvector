@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/containerd/log"
 	admissionv1beta1 "k8s.io/api/admission/v1beta1"
 )
 
@@ -28,6 +29,7 @@ const CLUSLockUserKey string = CLUSLockStore + "user"
 const CLUSLockPolicyKey string = CLUSLockStore + "policy"
 const CLUSLockServerKey string = CLUSLockStore + "server"
 const CLUSLockUpgradeKey string = CLUSLockStore + "upgrade"
+const CLUSLockRestoreKey string = CLUSLockStore + "restore"
 const CLUSLockAdmCtrlKey string = CLUSLockStore + "adm_ctrl"
 const CLUSLockFedKey string = CLUSLockStore + "federation"
 const CLUSLockScannerKey string = CLUSLockStore + "scanner"
@@ -167,6 +169,7 @@ const CLUSCtrlConfigLoadedKey string = CLUSStateStore + "ctrl_cfg_load"
 const CLUSCtrlDistLockStore string = CLUSStateStore + "dist_lock/"
 const CLUSCtrlUsageReportStore string = CLUSStateStore + "usage_report/"
 const CLUSCtrlVerKey string = CLUSStateStore + "ctrl_ver"
+const CLUSKvRestoreKey string = CLUSStateStore + "kv_restore"
 const CLUSExpiredTokenStore string = CLUSStateStore + "expired_token/"
 const CLUSImportStore string = CLUSStateStore + "import/"
 
@@ -703,6 +706,11 @@ type CLUSCtrlVersion struct {
 	KVVersion   string `json:"kv_version"`
 }
 
+type CLUSKvRestore struct {
+	StartAt  time.Time `json:"start_at"`
+	CtrlerID string    `json:"controller_id"`
+}
+
 type CLUSSyslogConfig struct {
 	SyslogIP          net.IP   `json:"syslog_ip"`
 	SyslogServer      string   `json:"syslog_server"`
@@ -780,40 +788,43 @@ type CLUSWebhook struct {
 
 type CLUSSystemConfig struct {
 	NewServicePolicyMode      string `json:"new_service_policy_mode"`
+	NewServiceProfileMode     string `json:"new_service_profile_mode"`
 	NewServiceProfileBaseline string `json:"new_service_profile_baseline"`
 	UnusedGroupAging          uint8  `json:"unused_group_aging"`
 	CLUSSyslogConfig
-	SingleCVEPerSyslog   bool                      `json:"single_cve_per_syslog"`
-	SyslogCVEInLayers    bool                      `json:"syslog_cve_in_layers"`
-	AuthOrder            []string                  `json:"auth_order"`
-	AuthByPlatform       bool                      `json:"auth_by_platform"`
-	RancherEP            string                    `json:"rancher_ep"`
-	InternalSubnets      []string                  `json:"configured_internal_subnets,omitempty"`
-	WebhookEnable_UNUSED bool                      `json:"webhook_enable"`
-	WebhookUrl_UNUSED    string                    `json:"webhook_url"`
-	Webhooks             []CLUSWebhook             `json:"webhooks"`
-	ClusterName          string                    `json:"cluster_name"`
-	ControllerDebug      []string                  `json:"controller_debug"`
-	TapProxymesh         bool                      `json:"tap_proxymesh"`
-	RegistryHttpProxy    CLUSProxy                 `json:"registry_http_proxy"`
-	RegistryHttpsProxy   CLUSProxy                 `json:"registry_https_proxy"`
-	IBMSAConfigNV        CLUSIBMSAConfigNV         `json:"ibmsa_config_nv"`
-	IBMSAConfig          CLUSIBMSAConfig           `json:"ibmsa_config"`
-	IBMSAOnboardData     CLUSIBMSAOnboardData      `json:"ibmsa_onboard_data"`
-	XffEnabled           bool                      `json:"xff_enabled"`
-	CfgType              TCfgType                  `json:"cfg_type"`
-	NetServiceStatus     bool                      `json:"net_service_status"`
-	NetServicePolicyMode string                    `json:"net_service_policy_mode"`
-	DisableNetPolicy     bool                      `json:"disable_net_policy"`
-	DetectUnmanagedWl    bool                      `json:"detect_unmanaged_wl"`
-	EnableIcmpPolicy     bool                      `json:"enable_icmp_policy"`
-	ModeAutoD2M          bool                      `json:"mode_auto_d2m"`
-	ModeAutoD2MDuration  int64                     `json:"mode_auto_d2m_duration"`
-	ModeAutoM2P          bool                      `json:"mode_auto_m2p"`
-	ModeAutoM2PDuration  int64                     `json:"mode_auto_m2p_duration"`
-	ScannerAutoscale     CLUSSystemConfigAutoscale `json:"scanner_autoscale"`
-	NoTelemetryReport    bool                      `json:"no_telemetry_report,omitempty"`
-	RemoteRepositories   []CLUSRemoteRepository    `json:"remote_repositories"`
+	SingleCVEPerSyslog    bool                      `json:"single_cve_per_syslog"`
+	SyslogCVEInLayers     bool                      `json:"syslog_cve_in_layers"`
+	AuthOrder             []string                  `json:"auth_order"`
+	AuthByPlatform        bool                      `json:"auth_by_platform"`
+	RancherEP             string                    `json:"rancher_ep"`
+	InternalSubnets       []string                  `json:"configured_internal_subnets,omitempty"`
+	WebhookEnable_UNUSED  bool                      `json:"webhook_enable"`
+	WebhookUrl_UNUSED     string                    `json:"webhook_url"`
+	Webhooks              []CLUSWebhook             `json:"webhooks"`
+	ClusterName           string                    `json:"cluster_name"`
+	ControllerDebug       []string                  `json:"controller_debug"`
+	TapProxymesh          bool                      `json:"tap_proxymesh"`
+	RegistryHttpProxy     CLUSProxy                 `json:"registry_http_proxy"`
+	RegistryHttpsProxy    CLUSProxy                 `json:"registry_https_proxy"`
+	IBMSAConfigNV         CLUSIBMSAConfigNV         `json:"ibmsa_config_nv"`
+	IBMSAConfig           CLUSIBMSAConfig           `json:"ibmsa_config"`
+	IBMSAOnboardData      CLUSIBMSAOnboardData      `json:"ibmsa_onboard_data"`
+	XffEnabled            bool                      `json:"xff_enabled"`
+	CfgType               TCfgType                  `json:"cfg_type"`
+	NetServiceStatus      bool                      `json:"net_service_status"`
+	NetServicePolicyMode  string                    `json:"net_service_policy_mode"`
+	DisableNetPolicy      bool                      `json:"disable_net_policy"`
+	DetectUnmanagedWl     bool                      `json:"detect_unmanaged_wl"`
+	EnableIcmpPolicy      bool                      `json:"enable_icmp_policy"`
+	ModeAutoD2M           bool                      `json:"mode_auto_d2m"`
+	ModeAutoD2MDuration   int64                     `json:"mode_auto_d2m_duration"`
+	ModeAutoM2P           bool                      `json:"mode_auto_m2p"`
+	ModeAutoM2PDuration   int64                     `json:"mode_auto_m2p_duration"`
+	ScannerAutoscale      CLUSSystemConfigAutoscale `json:"scanner_autoscale"`
+	NoTelemetryReport     bool                      `json:"no_telemetry_report,omitempty"`
+	RemoteRepositories    []CLUSRemoteRepository    `json:"remote_repositories"`
+	EnableTLSVerification bool                      `json:"enable_tls_verification"`
+	GlobalCaCerts         []string                  `json:"cacerts"`
 }
 
 type CLUSSystemConfigAutoscale struct {
@@ -927,6 +938,7 @@ type CLUSServerOIDC struct {
 	ClientSecret string   `json:"client_secret,cloak"`
 	Scopes       []string `json:"scopes"`
 	GroupClaim   string   `json:"group_claim"`
+	UseProxy     bool     `json:"use_proxy"`
 }
 
 type CLUSServer struct {
@@ -1007,6 +1019,7 @@ type CLUSController struct {
 	Leader            bool   `json:"leader"`
 	OrchConnStatus    string `json:"orch_conn_status"`
 	OrchConnLastError string `json:"orch_conn_last_error"`
+	ReadPrimeConfig   bool   `json:"read_prime_config"`
 }
 
 type CLUSProtoPort struct {
@@ -1199,10 +1212,12 @@ type CLUSAgentConfig struct {
 	Debug                []string `json:"debug,omitempty"`
 	DisableNvProtectMode bool     `json:"disable_nvprotect"`
 	DisableKvCongestCtl  bool     `json:"disable_kvcctl"`
+	LogLevel             string   `json:"log_level,omitempty"`
 }
 
 type CLUSControllerConfig struct {
-	Debug []string `json:"debug,omitempty"`
+	Debug    []string `json:"debug,omitempty"`
+	LogLevel string   `json:"log_level,omitempty"`
 }
 
 type CLUSVolume struct {
@@ -1388,6 +1403,8 @@ const (
 	CLUSEvCrdSkipped                 // for crd Config import
 	CLUSEvK8sAdmissionWebhookCChange // for admission control
 	CLUSEvGroupMetricViolation       //network metric violation per group level
+	CLUSEvKvRestored                 // kv is restored from pvc
+	CLUSEvScanDataRestored           // scan data is restored from pvc
 )
 
 const (
@@ -1540,6 +1557,15 @@ type CLUSAuditLog struct {
 
 const SnifferIdAgentField = 12
 
+type TagDetail struct {
+	ID              string `yaml:"id" json:"id"`
+	Title           string `yaml:"title" json:"title"`
+	Description     string `yaml:"description" json:"description"`
+	CIS_Sub_Control string `yaml:"cis-sub-control"`
+}
+
+type TagDetails []TagDetail
+
 type CLUSComplianceProfileEntry struct {
 	TestNum string   `json:"test_num"`
 	Tags    []string `json:"tags"`
@@ -1636,6 +1662,28 @@ const (
 	CustomCheckControl_Strict  = "strict"
 	CustomCheckControl_Loose   = "loose"
 )
+
+const (
+	LogLevel_Error = "error"
+	LogLevel_Warn  = "warn"
+	LogLevel_Info  = "info"
+	LogLevel_Debug = "debug"
+)
+
+func CLUSGetLogLevel(logLevel string) log.Level {
+	switch logLevel {
+	case LogLevel_Error:
+		return log.ErrorLevel
+	case LogLevel_Warn:
+		return log.WarnLevel
+	case LogLevel_Info:
+		return log.InfoLevel
+	case LogLevel_Debug:
+		return log.DebugLevel
+	default:
+		return log.InfoLevel
+	}
+}
 
 type CLUSCustomCheck struct {
 	Name   string `json:"name"`
@@ -1977,6 +2025,7 @@ const (
 const (
 	CLUSRootCAKey = "rootCA"
 	CLUSJWTKey    = "neuvector-jwt-signing"
+	CLUSTLSCert   = "neuvector"
 )
 
 func CLUSObjectCertKey(cn string) string {
@@ -2283,10 +2332,11 @@ type CLUSFedSettings struct { // stored on each cluster (master & joint cluster)
 }
 
 type CLUSFedClusterStatus struct {
-	Status            int       `json:"status"` // status of a joint cluster
-	CspType           TCspType  `json:"csp_type"`
-	Nodes             int       `json:"nodes"`               // total nodes count in this cluster
-	LastConnectedTime time.Time `json:"last_connected_time"` // only for master's connection status on joint cluster
+	Status              int       `json:"status"`                // status of a joint cluster
+	SwitchToUnreachable int       `json:"switch_to_unreachable"` // counts of connected -> disconnected
+	CspType             TCspType  `json:"csp_type"`
+	Nodes               int       `json:"nodes"`               // total nodes count in this cluster
+	LastConnectedTime   time.Time `json:"last_connected_time"` // only for master's connection status on joint cluster
 }
 
 type CLUSFedJoinedClusterList struct { // only available on master cluster
@@ -2368,6 +2418,7 @@ type CLUSFedScanRevisions struct {
 	ScannedRegRevs map[string]uint64 `json:"scanned_reg_revs"` // increases whenever the scan result of any image in a fed registry is changed (registry name : revision)
 	ScannedRepoRev uint64            `json:"scanned_repo_rev"` // increases whenever there is any change in master cluster's repo scan data
 	Restoring      bool              `json:"restoring"`        // fed registry revision
+	RestoreAt      time.Time         `json:"restore_at"`
 }
 
 // dlp rule

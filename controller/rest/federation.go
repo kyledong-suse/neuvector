@@ -857,6 +857,13 @@ func getJointClusterToken(rc *share.CLUSFedJointClusterInfo, clusterID string, u
 		} else if user.Role == api.UserRoleFedReader {
 			remoteRolePermits.DomainRole = map[string]string{access.AccessDomainGlobal: api.UserRoleReader}
 		}
+		/* fed access for namespaces is not supported yet
+		if user.ExtraPermits.HasPermFed() {
+			extraPermits := user.ExtraPermits
+			extraPermits.FilterPermits(access.AccessDomainGlobal, "remote", api.FedRoleMaster)
+			remoteRolePermits.ExtraPermits = map[string]share.NvPermissions{access.AccessDomainGlobal: extraPermits}
+		}
+		*/
 		user.RemoteRolePermits = &remoteRolePermits
 	}
 
@@ -892,6 +899,12 @@ func getJointClusterToken(rc *share.CLUSFedJointClusterInfo, clusterID string, u
 				tokenData := api.RESTTokenData{}
 				if err = json.Unmarshal(data, &tokenData); err == nil {
 					cacher.SetFedJoinedClusterToken(clusterID, login.id, tokenData.Token.Token)
+
+					// apikey - timer to expire the login session
+					if login.loginType == loginTypeApikey {
+						login.timer = time.AfterFunc(time.Second*time.Duration(user.Timeout), func() { login.expire() })
+					}
+
 					return tokenData.Token.Token, nil
 				} else {
 					log.WithFields(log.Fields{"cluster": rc.RestInfo.Server, "proxyUsed": proxyUsed, "error": err}).Error("unmarshal token")
@@ -1109,24 +1122,32 @@ func updateClusterState(id, masterClusterID string, status int, cspUsage *share.
 		return true
 	}
 
+	// _fedClusterConnected(200), _fedClusterJoined(201), _fedClusterOutOfSync(202), _fedClusterSynced(203)
+	connectedStates := utils.NewSet(_fedClusterConnected, _fedClusterJoined, _fedClusterOutOfSync, _fedClusterSynced)
 	changed := false
 	cached := cacher.GetFedJoinedClusterStatus(id, acc)
-	if masterClusterID != "" {
-		// _fedClusterConnected(200), _fedClusterJoined(201), _fedClusterOutOfSync(202), _fedClusterSynced(203)
-		connectedStates := utils.NewSet(200, 201, 202, 203)
-		if connectedStates.Contains(status) {
-			now := time.Now()
-			duration := time.Duration(cctx.CspPauseInterval*15) * time.Second
-			if cached.LastConnectedTime.IsZero() || cached.Status != status || now.After(cached.LastConnectedTime.Add(duration)) {
-				cached.LastConnectedTime = now
-				changed = true
-			}
+	if connectedStates.Contains(status) {
+		now := time.Now()
+		duration := time.Duration(cctx.CspPauseInterval*15) * time.Second
+		if cached.LastConnectedTime.IsZero() || cached.Status != status || now.After(cached.LastConnectedTime.Add(duration)) {
+			cached.LastConnectedTime = now
+			cached.SwitchToUnreachable = 0
+			changed = true
 		}
 	}
 	if cached.Status != status {
-		if cached.Status == _fedClusterJoinPending && (status == _fedClusterLeft || status == _fedClusterDisconnected) {
+		clusterUnreachable := false
+		if status == _fedClusterLeft || status == _fedClusterDisconnected {
+			clusterUnreachable = true
+		}
+		if cached.Status == _fedClusterJoinPending && clusterUnreachable {
 			// do not change joint cluster status
 		} else {
+			if clusterUnreachable {
+				if connectedStates.Contains(cached.Status) && cached.SwitchToUnreachable == 0 {
+					cached.SwitchToUnreachable++
+				}
+			}
 			cached.Status = status
 			changed = true
 		}
@@ -1344,10 +1365,14 @@ func handlerGetFedMember(w http.ResponseWriter, r *http.Request, ps httprouter.P
 	log.WithFields(log.Fields{"URL": r.URL.String()}).Debug()
 	defer r.Body.Close()
 
-	acc, login := isFedOpAllowed(FedRoleAny, _readerRequired, w, r)
-	if acc == nil || login == nil {
+	acc0, login := getAccessControl(w, r, "")
+	if acc0 == nil {
+		return
+	} else if !login.hasFedPermission() && !acc0.HasGlobalPermissions(share.PERMS_CLUSTER_READ, 0) {
+		restRespAccessDenied(w, login)
 		return
 	}
+	acc := acc0.BoostPermissions(share.PERM_SYSTEM_CONFIG | share.PERM_FED)
 
 	org, err := cacher.GetFedMember(_clusterStatusMap, acc) // org is type RESTFedMembereshipData
 	if err != nil {
@@ -2766,12 +2791,16 @@ func pollFedRules(forcePulling bool, tryTimes int) bool {
 					fedCfg := cacher.GetFedSettings()
 					if respTo.DeployRepoScanData != fedCfg.DeployRepoScanData {
 						// fed scan data deployment option is changed on master cluster.
-						scanRevs, _, err := clusHelper.GetFedScanRevisions()
 						// delete fed repo scan result stored on managed cluster if fed repo scan data deployment is disabled on master cluster
 						clusHelper.DeleteRegistryKeys(common.RegistryFedRepoScanName)
-						scanRevs.ScannedRepoRev = 0
-						if err == nil {
-							clusHelper.PutFedScanRevisions(&scanRevs, nil)
+						for i := 0; i < 3; i++ {
+							if scanRevs, rev, err := clusHelper.GetFedScanRevisions(); err == nil {
+								scanRevs.ScannedRepoRev = 0
+								if err = clusHelper.PutFedScanRevisions(&scanRevs, &rev); err == nil {
+									break
+								}
+								time.Sleep(time.Second * 2)
+							}
 						}
 						fedCfg.DeployRepoScanData = respTo.DeployRepoScanData
 						clusHelper.PutFedSettings(nil, fedCfg)
@@ -3368,6 +3397,7 @@ func handlerFedClusterForward(w http.ResponseWriter, r *http.Request, ps httprou
 				"/v1/file/vulnerability/profile",
 				"/v1/vulasset",
 				"/v1/assetvul",
+				"/v2/workload",
 			})
 			if exportURIs.Contains(request) {
 				allowedPost = true
@@ -3455,7 +3485,19 @@ func handlerFedClusterForward(w http.ResponseWriter, r *http.Request, ps httprou
 		return
 	}
 	body, _ := io.ReadAll(r.Body)
-	user, _, _ := clusHelper.GetUserRev(login.fullname, acc)
+
+	var user *share.CLUSUser
+	if login.loginType == loginTypeApikey {
+		wrapUser, err := wrapApiKeyAsUser(login)
+		if err != nil {
+			restRespErrorMessage(w, http.StatusBadRequest, api.RESTErrRemoteUnauthorized, "Unable to authenticate")
+			return
+		}
+		user = wrapUser
+	} else {
+		user, _, _ = clusHelper.GetUserRev(login.fullname, acc)
+	}
+
 	remoteExport := false
 
 	for _, refreshToken := range []bool{false, true} {
@@ -3573,4 +3615,21 @@ func handlerFedClusterForwardDelete(w http.ResponseWriter, r *http.Request, ps h
 	defer r.Body.Close()
 
 	handlerFedClusterForward(w, r, ps, http.MethodDelete)
+}
+
+func wrapApiKeyAsUser(login *loginSession) (*share.CLUSUser, error) {
+	apikey, _, err := clusHelper.GetApikeyRev(login.fullname, access.NewReaderAccessControl())
+	if err != nil {
+		return nil, err
+	}
+
+	user := &share.CLUSUser{}
+	user.Fullname = apikey.Name
+	user.Username = apikey.Name
+	user.Locale = apikey.Locale
+	user.Timeout = 300
+	user.Role = apikey.Role
+	login.fullname = login.fullname + " (API Key)"
+
+	return user, nil
 }

@@ -90,7 +90,7 @@ var PermissionOptions = []*api.RESTRolePermitOptionInternal{ // basic permission
 	&api.RESTRolePermitOptionInternal{
 		ID:             share.PERM_SYSTEM_CONFIG_ID,
 		Value:          share.PERM_SYSTEM_CONFIG,
-		SupportScope:   CONST_PERM_SUPPORT_GLOBAL,
+		SupportScope:   CONST_PERM_SUPPORT_BOTH,
 		ReadSupported:  true,
 		WriteSupported: true,
 	},
@@ -210,7 +210,7 @@ var PermissionOptions = []*api.RESTRolePermitOptionInternal{ // basic permission
 	&api.RESTRolePermitOptionInternal{
 		ID:             share.PERMS_COMPLIANCE_ID,
 		Value:          share.PERMS_COMPLIANCE,
-		SupportScope:   CONST_PERM_SUPPORT_GLOBAL,
+		SupportScope:   CONST_PERM_SUPPORT_BOTH,
 		ReadSupported:  true,
 		WriteSupported: true,
 		ComplexPermits: []*api.RESTRolePermitOptionInternal{
@@ -726,7 +726,6 @@ func CompileUriPermitsMapping() {
 				"v1/fed/healthcheck",
 			},
 			CONST_API_DEBUG: []string{
-				"v1/fed/member",
 				"v1/meter",
 				"v1/enforcer/*/probe_summary",
 				"v1/enforcer/*/probe_processes",
@@ -744,7 +743,7 @@ func CompileUriPermitsMapping() {
 				"v1/session/summary",
 				"v1/file_monitor_file",
 				"v1/system/usage",
-				"v1/system/rbac",
+				"v1/system/alerts",
 			},
 			CONST_API_RT_SCAN: []string{
 				"v1/scan/config",
@@ -759,7 +758,7 @@ func CompileUriPermitsMapping() {
 				"v1/scan/platform/platform",
 				"v1/scan/asset",
 				"v1/vulasset",
-				// "scanasset5", // TODO: local dev only
+				"v1/scan/asset/images",
 			},
 			CONST_API_REG_SCAN: []string{
 				"v1/scan/registry",
@@ -865,6 +864,7 @@ func CompileUriPermitsMapping() {
 				"v1/list/compliance",
 				"v1/compliance/profile",
 				"v1/compliance/profile/*",
+				"v1/compliance/available_filter",
 			},
 			CONST_API_AUDIT_EVENTS: []string{
 				"v1/log/audit",
@@ -912,6 +912,7 @@ func CompileUriPermitsMapping() {
 				"v1/internal/system",
 			},
 			CONST_API_FED: []string{
+				"v1/fed/member",
 				"v1/fed/join_token",
 				"v1/fed/cluster/*/**",
 				"v1/fed/view/*",
@@ -951,8 +952,7 @@ func CompileUriPermitsMapping() {
 				"v1/scan/platform/platform",
 				"v1/vulasset",
 				"v1/assetvul",
-				// "scanasset5",     // TODO: local dev only
-				// "scanassetview1", // TODO: local dev only
+				"v1/scan/asset/images",
 			},
 			CONST_API_REG_SCAN: []string{
 				"v1/scan/registry/*/scan",
@@ -1029,6 +1029,9 @@ func CompileUriPermitsMapping() {
 				"v1/vulnerability/profile/*/entry",
 				"v1/file/vulnerability/profile",
 				"v1/file/vulnerability/profile/config",
+			},
+			CONST_API_WORKLOAD: []string{
+				"v2/workload",
 			},
 		}
 
@@ -1757,15 +1760,20 @@ func (acc *AccessControl) GetAdminDomains(writePermitsRequired uint32) []string 
 		}
 	}
 
-	list := make([]string, 0)
+	domains := utils.NewSet()
 	for domain, role := range acc.roles {
 		_, writePermits := getRolePermitValues(role, domain)
 		if writePermitsRequired == (writePermits & writePermitsRequired) {
-			list = append(list, domain)
+			domains.Add(domain)
 		}
 	}
-	if len(list) > 0 {
-		return list
+	for domain, perms := range acc.extraPermits {
+		if writePermitsRequired == (perms.WriteValue & writePermitsRequired) {
+			domains.Add(domain)
+		}
+	}
+	if domains.Cardinality() > 0 {
+		return domains.ToStringSlice()
 	} else {
 		return nil
 	}
@@ -1868,7 +1876,7 @@ func (acc *AccessControl) GetRoleDomains() map[string][]string {
 }
 
 func ContainsNonSupportRole(role string) bool {
-	var roles = utils.NewSet(api.UserRoleFedAdmin, api.UserRoleFedReader, api.UserRoleIBMSA, api.UserRoleImportStatus)
+	var roles = utils.NewSet(api.UserRoleIBMSA, api.UserRoleImportStatus)
 	return roles.Contains(role)
 }
 

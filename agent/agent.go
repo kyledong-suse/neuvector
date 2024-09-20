@@ -246,13 +246,14 @@ func dumpGoroutineStack() {
 func main() {
 	var joinAddr, advAddr, bindAddr string
 	var err error
+	debug := false
 
 	log.SetOutput(os.Stdout)
-	log.SetLevel(log.InfoLevel)
+	log.SetLevel(share.CLUSGetLogLevel(gInfo.agentConfig.LogLevel))
 	log.SetFormatter(&utils.LogFormatter{Module: "AGT"})
 
 	connLog.Out = os.Stdout
-	connLog.Level = log.InfoLevel
+	connLog.Level = share.CLUSGetLogLevel(gInfo.agentConfig.LogLevel)
 	connLog.Formatter = &utils.LogFormatter{Module: "AGT"}
 
 	log.WithFields(log.Fields{"version": Version}).Info("START")
@@ -264,7 +265,7 @@ func main() {
 	// }
 
 	withCtlr := flag.Bool("c", false, "Coexist controller and ranger")
-	debug := flag.Bool("d", false, "Enable control path debug")
+	log_level := flag.String("log_level", share.LogLevel_Info, "Enforcer log level")
 	debug_level := flag.String("v", "", "debug level")
 	join := flag.String("j", "", "Cluster join address")
 	adv := flag.String("a", "", "Cluster advertise address")
@@ -285,16 +286,20 @@ func main() {
 	custom_check_control := flag.String("cbench", share.CustomCheckControl_Disable, "Custom check control")
 	flag.Parse()
 
-	if *debug {
-		log.SetLevel(log.DebugLevel)
-		gInfo.agentConfig.Debug = []string{"ctrl"}
+	// default log_level is LogLevel_Info
+	if *log_level != "" && *log_level != gInfo.agentConfig.LogLevel {
+		gInfo.agentConfig.LogLevel = *log_level
+		log.SetLevel(share.CLUSGetLogLevel(gInfo.agentConfig.LogLevel))
+		if *log_level == share.LogLevel_Debug {
+			debug = true
+			gInfo.agentConfig.Debug = []string{"ctrl"}
+		} else {
+			connLog.Level = share.CLUSGetLogLevel(gInfo.agentConfig.LogLevel)
+		}
 	}
 
-	if *debug_level != "" {
+	if debug && *debug_level != "" {
 		levels := utils.NewSetFromSliceKind(append(gInfo.agentConfig.Debug, strings.Split(*debug_level, " ")...))
-		if !*debug && levels.Contains("ctrl") {
-			levels.Remove("ctrl")
-		}
 		gInfo.agentConfig.Debug = levels.ToStringSlice()
 	}
 
@@ -519,7 +524,7 @@ func main() {
 		ctx, internalCertControllerCancel = context.WithCancel(context.Background())
 		defer internalCertControllerCancel()
 		// Initialize secrets.  Most of services are not running at this moment, so skip their reload functions.
-		err = migration.InitializeInternalSecretController(ctx, []func([]byte, []byte, []byte) error{
+		capable, err := migration.InitializeInternalSecretController(ctx, []func([]byte, []byte, []byte) error{
 			// Reload consul
 			func(cacert []byte, cert []byte, key []byte) error {
 				log.Info("Reloading consul config")
@@ -542,7 +547,16 @@ func main() {
 			log.WithError(err).Error("failed to initialize internal secret controller")
 			os.Exit(-2)
 		}
-		log.Info("internal certificate is initialized")
+		if capable {
+			log.Info("internal certificate is initialized")
+		} else {
+			if os.Getenv("NO_FALLBACK") == "" {
+				log.Warn("required permission is missing...fallback to the built-in certificate if it exists")
+			} else {
+				log.Error("required permission is missing...ending now")
+				os.Exit(-2)
+			}
+		}
 	}
 
 	err = cluster.ReloadInternalCert()
@@ -583,7 +597,7 @@ func main() {
 	clusterCfg.BindAddr = bindAddr
 	clusterCfg.LANPort = *lanPort
 	clusterCfg.DataCenter = cluster.DefaultDataCenter
-	clusterCfg.EnableDebug = *debug
+	clusterCfg.EnableDebug = debug
 
 	if err = clusterStart(&clusterCfg); err != nil {
 		log.WithFields(log.Fields{"error": err}).Error("Failed to start cluster. Exit!")
@@ -656,7 +670,7 @@ func main() {
 		WalkHelper:           walkerTask,
 	}
 
-	if prober, err = probe.New(&probeConfig); err != nil {
+	if prober, err = probe.New(&probeConfig, gInfo.agentConfig.LogLevel); err != nil {
 		log.WithFields(log.Fields{"error": err}).Error("Failed to probe. Exit!")
 		os.Exit(-2)
 	}
@@ -672,9 +686,10 @@ func main() {
 		SendReport:     prober.SendAggregateFsMonReport,
 		SendAccessRule: sendLearnedFileAccessRule,
 		EstRule:        cbEstimateFileAlertByGroup,
+		NVProtect:      (!*skip_nvProtect),
 	}
 
-	if fileWatcher, err = fsmon.NewFileWatcher(&fmonConfig); err != nil {
+	if fileWatcher, err = fsmon.NewFileWatcher(&fmonConfig, gInfo.agentConfig.LogLevel); err != nil {
 		log.WithFields(log.Fields{"error": err}).Error("Failed to open file monitor!")
 		os.Exit(-2)
 	}
@@ -690,7 +705,7 @@ func main() {
 		bench.ResetDockerStatus()
 	}
 	if !Host.CapKubeBench {
-			// If the older version write status into the cluster, clear it.
+		// If the older version write status into the cluster, clear it.
 		bench.ResetKubeStatus()
 	}
 

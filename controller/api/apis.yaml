@@ -3564,6 +3564,21 @@ paths:
       responses:
         '200':
           description: Success
+  /v1/system/alerts:
+    get:
+      tags:
+        - System
+      summary: System alerts
+      security:
+        - ApiKeyAuth: []
+        - TokenAuth: []
+      produces:
+        - application/json
+      responses:
+        '200':
+          description: Success
+          schema:
+            $ref: '#/definitions/RESTNvAlerts'
   /v1/system/config/webhook:
     post:
       tags:
@@ -4323,6 +4338,27 @@ paths:
         - TokenAuth: []
       produces:
         - application/json
+      responses:
+        '200':
+          description: Success
+          schema:
+            $ref: '#/definitions/RESTWorkloadsDataV2'
+    post:
+      tags:
+        - Container
+      summary: Get container list that match the provided ID list
+      security:
+        - ApiKeyAuth: []
+        - TokenAuth: []
+      produces:
+        - application/json
+      parameters:
+        - in: body
+          name: body
+          description: Container ID list
+          required: true
+          schema:
+            $ref: '#/definitions/RESTAssetIDList'
       responses:
         '200':
           description: Success
@@ -5856,10 +5892,10 @@ definitions:
         example: "831010404316"
       access_key_id:
         type: string
-        example: AKIAIHUHS4BTYUDKVV4Q
+        example: "<access key id from AWS>"
       secret_access_key:
         type: string
-        example: D7XGZO34AMUfTbunL
+        example: "<secret access key from AWS>"
       region:
         type: string
         example: us-west-2
@@ -8421,6 +8457,24 @@ definitions:
         type: string
         format: password
         example: password
+    description: Define proxy settings.
+  RESTProxyConfig:
+    type: object
+    required:
+      - url
+      - username
+    properties:
+      url:
+        type: string
+        example: ""
+      username:
+        type: string
+        example: username
+      password:
+        type: string
+        format: password
+        example: password
+    description: Define proxy settings, similar to RESTProxy, but allow users to perform partial update on RESTProxy. When both exist, this config will take precedence over RESTProxy.
   RESTSystemConfigAutoscale:
     type: object
     required:
@@ -8439,6 +8493,17 @@ definitions:
         type: integer
         format: uint32
         example: 3
+  RESTSystemConfigTls:
+    type: object
+    properties:
+      enable_tls_verification:
+        type: boolean
+        example: false
+      cacerts:
+        type: array
+        items:
+          type: string
+        example: ["-----BEGIN CERTIFICATE-----...", "-----BEGIN CERTIFICATE-----..."]
   RESTSystemConfigAutoscaleConfig:
     type: object
     properties:
@@ -8529,6 +8594,10 @@ definitions:
         $ref: '#/definitions/RESTProxy'
       registry_https_proxy:
         $ref: '#/definitions/RESTProxy'
+      registry_http_proxy_cfg:
+        $ref: '#/definitions/RESTProxyConfig'
+      registry_https_proxy_cfg:
+        $ref: '#/definitions/RESTProxyConfig'
   RESTSystemConfigIBMSAVCfg2:
     type: object
     properties:
@@ -10063,6 +10132,9 @@ definitions:
       default_role:
         type: string
         example: admin
+      use_proxy:
+        type: boolean
+        example: false
       role_groups:
         type: object
         properties:
@@ -10110,6 +10182,9 @@ definitions:
       default_role:
         type: string
         example: admin
+      use_proxy:
+        type: boolean
+        example: false
       role_groups:
         type: object
         properties:
@@ -10988,6 +11063,10 @@ definitions:
         $ref: '#/definitions/RESTProxy'
       registry_https_proxy:
         $ref: '#/definitions/RESTProxy'
+      registry_http_proxy_cfg:
+        $ref: '#/definitions/RESTProxyConfig'
+      registry_https_proxy_cfg:
+        $ref: '#/definitions/RESTProxyConfig'
   RESTSystemConfigSyslogV2:
     type: object
     required:
@@ -11076,6 +11155,8 @@ definitions:
         $ref: '#/definitions/RESTSystemConfigModeAutoV2'
       scanner_autoscale:
         $ref: '#/definitions/RESTSystemConfigAutoscale'
+      tls_cfg:
+        $ref: '#/definitions/RESTSystemConfigTls'
   RESTSystemConfigData:
     type: object
     properties:
@@ -11090,6 +11171,73 @@ definitions:
         $ref: '#/definitions/RESTSystemConfigV2'
       fed_config:
         $ref: '#/definitions/RESTFedSystemConfig'
+  RESTUpgradeInfo:
+    type: object
+    properties:
+      version:
+        type: string
+        example: "v5.3.0"
+      release_date:
+        type: string
+        example: "2023-10-12T00:41:38.00Z"
+      tag:
+        type: string
+        example: "v5.3.0"
+  RESTCheckUpgradeInfo:
+    type: object
+    properties:
+      min_upgrade_version:
+        $ref: '#/definitions/RESTUpgradeInfo'
+      max_upgrade_version:
+        $ref: '#/definitions/RESTUpgradeInfo'
+  RESTNvAlert:
+    type: object
+    properties:
+      id:
+        type: string
+        example: "d08afddc9f4516b68a82d7ff4da20fb3"
+      message:
+        type: string
+        example: "Managed cluster cluster.local-42 is disconnected from primary cluster"
+  RESTNvAlertGroup:
+    type: object
+    properties:
+      type:
+        type: string
+        example: "RBAC"
+      data:
+        type: array
+        items:
+          $ref: '#/definitions/RESTNvAlert'
+  RESTNvAcceptableAlerts:
+    type: object
+    properties:
+      clusterrole_alerts:
+        $ref: '#/definitions/RESTNvAlertGroup'
+      clusterrolebinding_alerts:
+        $ref: '#/definitions/RESTNvAlertGroup'
+      role_alerts:
+        $ref: '#/definitions/RESTNvAlertGroup'
+      rolebinding_alerts:
+        $ref: '#/definitions/RESTNvAlertGroup'
+      neuvector_crd_alerts:
+        $ref: '#/definitions/RESTNvAlertGroup'
+      certificate_alerts:
+        $ref: '#/definitions/RESTNvAlertGroup'
+      other_alerts:
+        $ref: '#/definitions/RESTNvAlertGroup'
+  RESTNvAlerts:
+    type: object
+    properties:
+      neuvector_upgrade_info:
+        $ref: '#/definitions/RESTCheckUpgradeInfo'
+      acceptable_alerts:
+        $ref: '#/definitions/RESTNvAcceptableAlerts'
+      accepted_alerts:
+        type: array
+        items:
+          type: string
+        example: ["Managed cluster cluster.local-42 is disconnected from primary cluster", "Internal CA certificate will be expired in 180 days"]
   RESTSystemConfigConfig:
     type: object
     properties:
@@ -11226,6 +11374,8 @@ definitions:
           $ref: '#/definitions/RESTRemoteRepository'
       misc_cfg:
         $ref: '#/definitions/RESTSystemConfigMiscCfgV2'
+      tls_cfg:
+        $ref: '#/definitions/RESTSystemConfigTls'
   RESTFedSystemConfigConfig:
     type: object
     properties:
@@ -13978,3 +14128,13 @@ definitions:
       write_value:
         type: integer
         format: uint32
+  RESTAssetIDList:
+    type: object
+    required:
+      - ids
+    properties:
+      ids:
+        type: array
+        items:
+          type: string
+          example: "<container id>"
