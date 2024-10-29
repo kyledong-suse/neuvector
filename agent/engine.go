@@ -46,8 +46,10 @@ var ContainerTaskChan chan *ContainerTask
 
 // inline: If a workload is configured to be inline (not including quarantin case)
 // capIntcp: Indicate if a workload can be put inline.
-//           Platform and host mode containers cannot be intercepted.
-//           If not interceptable, the container cannot be quarantined
+//
+//	Platform and host mode containers cannot be intercepted.
+//	If not interceptable, the container cannot be quarantined
+//
 // hasDatapath: parent and non-platform-containers, could be host mode
 // in the case that parent's pid==0, child's hasDatapath could be true
 type containerData struct {
@@ -128,7 +130,7 @@ type localSystemInfo struct {
 var defaultPolicyMode string = share.PolicyModeLearn
 var defaultTapProxymesh bool = true
 
-//to avoid false positive implicit violation on dp during upgrade, set XFF default to disabled
+// to avoid false positive implicit violation on dp during upgrade, set XFF default to disabled
 var defaultXffEnabled bool = false
 var defaultDisableNetPolicy bool = false
 var defaultDetectUnmanagedWl bool = false
@@ -352,7 +354,7 @@ func getNeuVectorRole(info *container.ContainerMetaExtra) (string, bool) {
 
 func isSidecarContainer(labels map[string]string) bool {
 	//check if container is a sidecar that is linkerd-proxy or istio-proxy
-	sc_containername, _ := labels[container.KubeKeyContainerName]
+	sc_containername := labels[container.KubeKeyContainerName]
 
 	if strings.Contains(sc_containername, container.KubeLinkerdProxyName) ||
 		strings.Contains(sc_containername, container.KubeIstioProxyName) ||
@@ -598,7 +600,7 @@ func changeContainerWire(c *containerData, inline bool, quar bool, quarReason *s
 func isProxyMesh(c *containerData) bool {
 	//ProxyMesh==true also indicate it is parent,
 	//but we also need to check pid since oc4.9+
-	if c.info.ProxyMesh == true && c.pid != 0 {
+	if c.info.ProxyMesh && c.pid != 0 {
 		return true
 	}
 	//in case parent's pid is zero we need to use child's pid,
@@ -606,7 +608,7 @@ func isProxyMesh(c *containerData) bool {
 	if c.parentNS != "" && c.hasDatapath && c.pid != 0 { //has parent
 		p, ok := gInfo.activeContainers[c.parentNS]
 		if ok { //parent exist
-			if p.info.ProxyMesh == true && p.pid == 0 { //parent is mesh and pid=0
+			if p.info.ProxyMesh && p.pid == 0 { //parent is mesh and pid=0
 				return true
 			}
 		}
@@ -624,7 +626,7 @@ func updateProxyMeshMac(c *containerData, withlock bool) {
 	if !withlock {
 		gInfoLock()
 	}
-	if c.info.ProxyMesh == false {
+	if !c.info.ProxyMesh {
 		//child, map mac to parent id because in
 		//network activity page parent is drawn
 		gInfo.macContainerMap[lomac_str] = c.parentNS
@@ -709,7 +711,7 @@ func programProxyMeshDP(c *containerData, cfgApp, restore bool) {
 		//as regular veth pair, we need to set up iptable rules with NFQUEUE
 		//in container's namespace, and dp need to create nfq handle(nfq_open)
 		proxyMeshApp := getProxyMeshAppMap(c, true)
-		if c.nfq == false {
+		if !c.nfq {
 			err := pipe.CreateNfqRules(c.pid, 0, true, true, "lo", proxyMeshApp)
 			if err != nil {
 				log.WithFields(log.Fields{"container": c.id, "error": err}).Error("Failed to create nfq iptable rules")
@@ -720,7 +722,9 @@ func programProxyMeshDP(c *containerData, cfgApp, restore bool) {
 				dp.DPCtrlAddNfqPort(netns, "lo", 0, lo_mac, &jumboFrame)
 			}
 		} else {
-			pipe.CreateNfqRules(c.pid, 0, false, true, "lo", proxyMeshApp)
+			if dbgError := pipe.CreateNfqRules(c.pid, 0, false, true, "lo", proxyMeshApp); dbgError != nil {
+				log.WithFields(log.Fields{"dbgError": dbgError}).Debug()
+			}
 			jumboFrame := gInfo.jumboFrameMTU
 			//create dp nfq handle
 			dp.DPCtrlAddNfqPort(netns, "lo", 0, lo_mac, &jumboFrame)
@@ -767,11 +771,15 @@ func programDelProxyMeshDP(c *containerData, ns string) {
 	if c.quar || c.inline {
 		//delete dp nfq handle if any then reset iptable rules
 		dp.DPCtrlDelNfqPort(netns, "lo")
-		pipe.DeleteNfqRules(c.pid)
+		if dbgError := pipe.DeleteNfqRules(c.pid); dbgError != nil {
+			log.WithFields(log.Fields{"dbgError": dbgError}).Debug()
+		}
 		c.nfq = false
 		dp.DPCtrlDelMAC("lo", lo_mac)
 	} else {
-		pipe.DeleteNfqRules(c.pid)
+		if dbgError := pipe.DeleteNfqRules(c.pid); dbgError != nil {
+			log.WithFields(log.Fields{"dbgError": dbgError}).Debug()
+		}
 		c.nfq = false
 		dp.DPCtrlDelTapPort(netns, "lo")
 		dp.DPCtrlDelMAC("lo", lo_mac)
@@ -987,7 +995,7 @@ func programUpdatePairs(c *containerData, restore bool) (bool, bool, bool, map[s
 				if len(pairOld.Addrs) != len(pairNew.Addrs) {
 					addrChanged = true
 				}
-				if bytes.Compare(pairOld.MAC, pairNew.MAC) != 0 {
+				if !bytes.Equal(pairOld.MAC, pairNew.MAC) {
 					delete(gInfo.macContainerMap, pairOld.MAC.String())
 					delete(gInfo.macPortPairMap, pairOld.MAC.String())
 					if c.parentNS != "" {
@@ -1104,7 +1112,7 @@ func updateAppPorts(c *containerData, parent *containerData) bool {
 
 	gInfoLock()
 	// remove closed port, only those opened by myself, not those merged from children.
-	for port, _ := range c.appMap {
+	for port := range c.appMap {
 		if _, ok := appMap[port]; !ok && c.ownListenPorts.Contains(port) {
 			delete(c.appMap, port)
 			/* In service mesh's case parent POD use encrypted connection,
@@ -1340,11 +1348,8 @@ func updateContainerNetworks(c *containerData, info *container.ContainerMetaExtr
 
 func isMultiNetworkContainer(c *containerData) bool {
 	if c.intcpPairs != nil {
-		if len(c.intcpPairs) < 2 {
-			return false
-		}
 		for _, pair := range c.intcpPairs {
-			if pair.Peer == "" {
+			if pair.Peer == "" || pair.Vxlan {
 				return true
 			}
 		}
@@ -1414,7 +1419,9 @@ func programPorts(c *containerData, restore bool) ([]*pipe.InterceptPair, error)
 					dp.DPCtrlDelPortPair(pair.ExPort(), pair.InPort())
 				}
 			}
-			pipe.RestoreContainer(c.pid, c.intcpPairs)
+			if dbgError := pipe.RestoreContainer(c.pid, c.intcpPairs); dbgError != nil {
+				log.WithFields(log.Fields{"dbgError": dbgError}).Debug()
+			}
 		}
 		newPairs, err := pipe.InspectContainerPorts(c.pid, c.intcpPairs)
 		if err != nil {
@@ -1498,7 +1505,7 @@ func programNfqDP(c *containerData, cfgApp bool, macChangePairs map[string]*pipe
 			dp.DPCtrlDelTapPort(netns, pair.Port)
 			dp.DPCtrlAddMAC(nvSvcPort, pair.MAC, pair.UCMAC, pair.BCMAC, oldMAC, pMAC, pAddrs)
 			idx++
-			if c.nfq == false {
+			if !c.nfq {
 				err := pipe.CreateNfqRules(c.pid, idx, true, false, pair.Port, proxyMeshApp)
 				if err != nil {
 					log.WithFields(log.Fields{"container": c.id, "error": err}).Error("Failed to create nfq iptable rules")
@@ -1508,7 +1515,9 @@ func programNfqDP(c *containerData, cfgApp bool, macChangePairs map[string]*pipe
 					dp.DPCtrlAddNfqPort(netns, pair.Port, idx, pair.MAC, &jumboFrame)
 				}
 			} else {
-				pipe.CreateNfqRules(c.pid, idx, false, false, pair.Port, proxyMeshApp)
+				if dbgError := pipe.CreateNfqRules(c.pid, idx, false, false, pair.Port, proxyMeshApp); dbgError != nil {
+					log.WithFields(log.Fields{"dbgError": dbgError}).Debug()
+				}
 				//create dp nfq handle
 				dp.DPCtrlAddNfqPort(netns, pair.Port, idx, pair.MAC, &jumboFrame)
 			}
@@ -1600,8 +1609,8 @@ func programDP(c *containerData, cfgApp bool, macChangePairs map[string]*pipe.In
 	}
 }
 
-////// Per container, not for a pod
-////// TODO: differentiate policy(s) from pod and its child container(s)
+// //// Per container, not for a pod
+// //// TODO: differentiate policy(s) from pod and its child container(s)
 func applyProcessProfilePolicy(c *containerData, service string) {
 	pg, ok := pe.ObtainProcessPolicy(service, c.id) // needs to be specific to each container
 	if ok {
@@ -1614,7 +1623,7 @@ func applyProcessProfilePolicy(c *containerData, service string) {
 	}
 }
 
-//////
+// ////
 func examNeuVectorInterface(c *containerData, change int) {
 	log.WithFields(log.Fields{"id": c.id, "name": c.name, "pid": c.pid}).Info()
 
@@ -1687,7 +1696,7 @@ func isEmptyProcessPod(info *container.ContainerMetaExtra) bool {
 	return false
 }
 
-//////
+// ////
 func startNeuVectorMonitors(id, role string, info *container.ContainerMetaExtra) {
 	log.WithFields(log.Fields{"id": id, "name": info.Name, "role": role, "pid": info.Pid}).Info()
 
@@ -1727,7 +1736,7 @@ func startNeuVectorMonitors(id, role string, info *container.ContainerMetaExtra)
 	gInfoLock() // guarding from deleting old instance
 	gInfo.allContainers.Add(id)
 	gInfo.neuContainers[id] = c
-	parent, _ := gInfo.neuContainers[parent_cid]
+	parent := gInfo.neuContainers[parent_cid]
 	gInfoUnlock()
 
 	// Send event to controller
@@ -1767,13 +1776,15 @@ func startNeuVectorMonitors(id, role string, info *container.ContainerMetaExtra)
 			for _, fltr := range conf.Profile.Filters {
 				switch fltr.Path {
 				case "/bin", "/sbin", "/usr/bin", "/usr/sbin": // apply blocking controls
+				/*
 					filters = append(filters, share.CLUSFileMonitorFilter{
-						Behavior:    share.FileAccessBehaviorMonitor, // share.FileAccessBehaviorBlock,
+						Behavior:    share.FileAccessBehaviorBlock,
 						Path:        fltr.Path,
 						Regex:       ".*",
 						Recursive:   false,
 						CustomerAdd: true,
 					})
+				*/
 				default:
 					filters = append(filters, fltr)
 				}
@@ -1802,7 +1813,7 @@ func startNeuVectorMonitors(id, role string, info *container.ContainerMetaExtra)
 	ClusterEventChan <- &ev
 }
 
-//////
+// ////
 func stopNeuVectorMonitor(c *containerData) {
 	if c.pid != 0 && osutil.IsPidValid(c.pid) {
 		// false-positive event from cri-o
@@ -1866,7 +1877,6 @@ func stopNeuVectorMonitor(c *containerData) {
 		ev = ClusterEvent{event: EV_DEL_CONTAINER, id: c.id}
 		ClusterEventChan <- &ev
 	}
-	return
 }
 
 func examNetworkInterface(c *containerData) bool {
@@ -1883,7 +1893,7 @@ func examNetworkInterface(c *containerData) bool {
 			programDP(c, false, nil)
 		}
 
-		if subnetChanged == true {
+		if subnetChanged {
 			dp.DPCtrlConfigInternalSubnet(gInfo.internalSubnets)
 		}
 		return true
@@ -1951,7 +1961,7 @@ func taskInterceptContainer(id string, info *container.ContainerMetaExtra) {
 			parent.info.ProxyMesh = true
 		}
 		if !hostMode && parent.pid == 0 && !info.Sidecar {
-			if parent.examIntface == false {
+			if !parent.examIntface {
 				parent.examIntface = true // only monitor one child container
 				if examNetworkInterface(c) {
 					notifyContainerChanges(c, parent, changeIntf)
@@ -2138,7 +2148,9 @@ func delProgramNfqDP(c *containerData, ns string) {
 	}
 
 	//delete dp nfq handle if any then reset iptable rules
-	pipe.DeleteNfqRules(c.pid)
+	if dbgError := pipe.DeleteNfqRules(c.pid); dbgError != nil {
+		log.WithFields(log.Fields{"dbgError": dbgError}).Debug()
+	}
 	c.nfq = false
 }
 
@@ -2195,7 +2207,9 @@ func taskStopContainer(id string, pid int) {
 
 		if c.inline || c.quar {
 			if driver != pipe.PIPE_CLM && !isMultiNetworkContainer(c) {
-				pipe.CleanupContainer(c.pid, c.intcpPairs)
+				if dbgError := pipe.CleanupContainer(c.pid, c.intcpPairs); dbgError != nil {
+					log.WithFields(log.Fields{"dbgError": dbgError}).Debug()
+				}
 			}
 			for _, pair := range c.intcpPairs {
 				dp.DPCtrlDelMAC(nvSvcPort, pair.MAC)
@@ -2239,7 +2253,7 @@ func taskStopContainer(id string, pid int) {
 	gInfoUnlock()
 
 	if dp.Connected() {
-		if subnetUpdate == true {
+		if subnetUpdate {
 			dp.DPCtrlConfigInternalSubnet(gInfo.internalSubnets)
 		}
 	}
@@ -2303,7 +2317,7 @@ func taskDPConnect() {
 		}
 	}
 	pe.PushFqdnInfoToDP()
-	if gInfo.disableNetPolicy == false {
+	if !gInfo.disableNetPolicy {
 		pe.PushNetworkPolicyToDP()
 	}
 
@@ -2452,7 +2466,7 @@ func containerTaskWorker(probeChan chan *probe.ProbeMessage, fsmonChan chan *fsm
 
 func containerTaskExit() {
 	// Make sure the function only called once
-	if atomic.CompareAndSwapInt32(&exitingTaskFlag, 0, 1) == false {
+	if !atomic.CompareAndSwapInt32(&exitingTaskFlag, 0, 1) {
 		return
 	}
 
@@ -2466,7 +2480,9 @@ func containerTaskExit() {
 		if c.inline || c.quar {
 			if driver != pipe.PIPE_CLM && !isMultiNetworkContainer(c) {
 				log.WithFields(log.Fields{"id": c.id}).Debug("Restore container")
-				pipe.RestoreContainer(c.pid, c.intcpPairs)
+				if dbgError := pipe.RestoreContainer(c.pid, c.intcpPairs); dbgError != nil {
+					log.WithFields(log.Fields{"dbgError": dbgError}).Debug()
+				}
 			}
 		}
 	}
@@ -2505,7 +2521,11 @@ func eventMonitorLoop(probeChan chan *probe.ProbeMessage, fsmonChan chan *fsmon.
 
 	go containerTaskWorker(probeChan, fsmonChan, dpStatusChan)
 
-	go global.RT.MonitorEvent(runtimeEventCallback, false)
+	go func() {
+		if err := global.RT.MonitorEvent(runtimeEventCallback, false); err != nil {
+			log.WithFields(log.Fields{"error": err}).Error("Runtime: MonitorEvent Failed")
+		}
+	}()
 }
 
 func stopMonitorLoop() {
@@ -2568,9 +2588,12 @@ func cbGetAllContainerList() utils.Set {
 
 func StartMonitorHostInterface(hid string, pid int, stopCh chan struct{}) {
 	log.WithFields(log.Fields{"hostid": hid}).Debug("")
-	global.SYS.CallNetNamespaceFunc(pid, func(params interface{}) {
+	dbgError := global.SYS.CallNetNamespaceFunc(pid, func(params interface{}) {
 		intfHostMonitorLoop(hid, stopCh)
 	}, nil)
+	if dbgError != nil {
+		log.WithFields(log.Fields{"dbgError": dbgError}).Debug()
+	}
 }
 
 func intfHostMonitorLoop(hid string, stopCh chan struct{}) {

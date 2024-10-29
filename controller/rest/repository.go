@@ -131,7 +131,7 @@ func (r *repoScanTask) Run(arg interface{}) interface{} {
 		rpt.Checks = filterComplianceChecks(rpt.Checks, cpf)
 
 		vpf := cacher.GetVulnerabilityProfileInterface(share.DefaultVulnerabilityProfileName)
-		rpt.Vuls = vpf.FilterVulREST(rpt.Vuls, []api.RESTIDName{api.RESTIDName{DisplayName: fmt.Sprintf("%s:%s", rpt.Repository, rpt.Tag)}}, "")
+		rpt.Vuls = vpf.FilterVulREST(rpt.Vuls, []api.RESTIDName{{DisplayName: fmt.Sprintf("%s:%s", rpt.Repository, rpt.Tag)}}, "")
 
 		rsr.report = rpt
 	}
@@ -151,7 +151,7 @@ func handlerScanRepositoryReq(w http.ResponseWriter, r *http.Request, ps httprou
 		return
 	}
 
-	if licenseAllowScan() != true {
+	if !licenseAllowScan() {
 		restRespError(w, http.StatusBadRequest, api.RESTErrLicenseFail)
 		return
 	}
@@ -219,6 +219,8 @@ func handlerScanRepositoryReq(w http.ResponseWriter, r *http.Request, ps httprou
 		w.WriteHeader(http.StatusNotModified)
 	} else {
 		ret := result.(*repoScanResult)
+		// Clear password field for registry data
+		data.Request.Password = ""
 		if ret.errCode == api.RESTErrClusterRPCError {
 			restRespError(w, http.StatusInternalServerError, ret.errCode)
 		} else if ret.errCode != 0 {
@@ -242,7 +244,7 @@ func handlerScanRepositorySubmit(w http.ResponseWriter, r *http.Request, ps http
 		return
 	}
 
-	if licenseAllowScan() != true {
+	if !licenseAllowScan() {
 		restRespError(w, http.StatusBadRequest, api.RESTErrLicenseFail)
 		return
 	}
