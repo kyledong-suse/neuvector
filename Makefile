@@ -242,7 +242,7 @@ push-enforcer-image: buildx-machine
 test:
 	go test $$(go list ./... | grep -v /e2e )
 
-NV_CHART_VERSION ?= 2.10.3
+NV_CHART_VERSION ?= 2.10.4
 NV_APP_VERSION ?= 5.5.4
 
 .PHONY: test-e2e
